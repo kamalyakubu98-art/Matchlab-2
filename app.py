@@ -504,4 +504,262 @@ try:
         away_form,
     )
 
-    results = calculate_probabilities
+    results = calculate_probabilities(
+        home_xg,
+        away_xg,
+        max_goals=max_goals,
+    )
+
+except (
+    ValueError,
+    OverflowError,
+    ZeroDivisionError,
+) as error:
+    st.error(f"Prediction engine error: {error}")
+    st.stop()
+
+home_display = (
+    home_data["name"]
+    if home_data
+    else home_input.strip().title()
+)
+
+away_display = (
+    away_data["name"]
+    if away_data
+    else away_input.strip().title()
+)
+
+# ============================================================
+# EXPECTED GOALS
+# ============================================================
+
+st.header(
+    f"{home_display} vs {away_display}"
+)
+
+c1, c2, c3 = st.columns(3)
+
+c1.metric(
+    "Home Expected Goals",
+    f"{home_xg:.2f}",
+)
+
+c2.metric(
+    "Total Expected Goals",
+    f"{home_xg + away_xg:.2f}",
+)
+
+c3.metric(
+    "Away Expected Goals",
+    f"{away_xg:.2f}",
+)
+
+# ============================================================
+# 1X2 PROBABILITIES
+# ============================================================
+
+st.subheader("1X2 Probabilities")
+
+c1, c2, c3 = st.columns(3)
+
+for col, label, key in [
+    (
+        c1,
+        f"{home_display} Win",
+        "home_win",
+    ),
+    (
+        c2,
+        "Draw",
+        "draw",
+    ),
+    (
+        c3,
+        f"{away_display} Win",
+        "away_win",
+    ),
+]:
+    probability = results[key]
+
+    col.metric(
+        label,
+        f"{probability * 100:.1f}%",
+    )
+
+    col.caption(
+        f"Fair odds: {fair_odds(probability):.2f}"
+    )
+
+# ============================================================
+# GOALS MARKETS
+# ============================================================
+
+st.subheader("Goal Markets")
+
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric(
+    "Over 1.5",
+    f"{results['over_15'] * 100:.1f}%",
+)
+
+c2.metric(
+    "Over 2.5",
+    f"{results['over_25'] * 100:.1f}%",
+)
+
+c3.metric(
+    "Over 3.5",
+    f"{results['over_35'] * 100:.1f}%",
+)
+
+c4.metric(
+    "BTTS — Yes",
+    f"{results['btts'] * 100:.1f}%",
+)
+
+# ============================================================
+# MODEL VERDICT
+# CORRECTED OUTCOMES DICTIONARY
+# ============================================================
+
+outcomes = {
+    home_display: results["home_win"],
+    "Draw": results["draw"],
+    away_display: results["away_win"],
+}
+
+model_pick = max(
+    outcomes,
+    key=outcomes.get,
+)
+
+model_probability = outcomes[model_pick]
+
+best_score, best_score_probability = (
+    results["top_scores"][0]
+)
+
+st.subheader("Model Verdict")
+
+st.success(
+    f"Most probable 1X2 outcome: "
+    f"{model_pick} "
+    f"({model_probability * 100:.1f}%)"
+)
+
+st.caption(
+    confidence_label(model_probability)
+    + " — this is a probability band, "
+    "not a guarantee of accuracy."
+)
+
+st.info(
+    f"Most likely correct score: "
+    f"{best_score[0]}-{best_score[1]} "
+    f"({best_score_probability * 100:.2f}%)"
+)
+
+# ============================================================
+# MOST LIKELY CORRECT SCORES
+# ============================================================
+
+st.subheader("Most Likely Correct Scores")
+
+score_rows = [
+    {
+        "Score": f"{h}-{a}",
+        "Probability": f"{p * 100:.2f}%",
+        "Fair Odds": round(fair_odds(p), 2),
+    }
+    for (h, a), p in results["top_scores"]
+]
+
+st.dataframe(
+    pd.DataFrame(score_rows),
+    use_container_width=True,
+    hide_index=True,
+)
+
+# ============================================================
+# PREDICTION SUMMARY
+# ============================================================
+
+st.subheader("Prediction Summary")
+
+summary = pd.DataFrame({
+    "Market": [
+        "Home Win",
+        "Draw",
+        "Away Win",
+        "Over 1.5",
+        "Over 2.5",
+        "Over 3.5",
+        "BTTS Yes",
+    ],
+    "Probability": [
+        results["home_win"],
+        results["draw"],
+        results["away_win"],
+        results["over_15"],
+        results["over_25"],
+        results["over_35"],
+        results["btts"],
+    ],
+})
+
+summary["Probability"] = (
+    summary["Probability"] * 100
+).round(1).astype(str) + "%"
+
+st.dataframe(
+    summary,
+    use_container_width=True,
+    hide_index=True,
+)
+
+# ============================================================
+# MODEL CHECKS AND LIMITATIONS
+# ============================================================
+
+with st.expander("Model checks and limitations"):
+
+    st.write(
+        "1X2 probability sum: "
+        f"{results['result_probability_sum'] * 100:.6f}%"
+    )
+
+    st.write(
+        "Estimated independent Poisson mass beyond "
+        "the selected score limit: "
+        f"{results['omitted_mass_estimate'] * 100:.6f}%"
+    )
+
+    st.write("""
+    The engine combines manually supplied attacking and
+    defensive ratings, home advantage, form multipliers,
+    and a weather/pitch multiplier.
+
+    It then applies independent Poisson goal probabilities
+    with a Dixon-Coles low-score correction and normalizes
+    the finite score matrix.
+
+    Team ratings are illustrative and are not automatically
+    updated from live results.
+
+    Form and weather controls are assumptions entered by
+    the user. They are not verified historical statistics.
+
+    To assess predictive quality, fit ratings from verified
+    historical matches and run a chronological backtest
+    using metrics such as log loss and Brier score.
+
+    Displayed fair odds are the reciprocal of model
+    probabilities and exclude bookmaker margin.
+    """)
+
+st.caption(
+    "MATCHLAB provides statistical estimates, "
+    "not guaranteed outcomes."
+)
