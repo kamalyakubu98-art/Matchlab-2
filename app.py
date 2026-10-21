@@ -88,9 +88,6 @@ historical_teams_data = {
     ]
 }
 league_df = pd.DataFrame(historical_teams_data)
-league_df["Attack_Rating"] = league_df["Attack_Rating"].astype(float)
-league_df["Defense_Rating"] = league_df["Defense_Rating"].astype(float)
-league_df["Home_Advantage"] = league_df["Home_Advantage"].astype(float)
 
 # --- 2. GLOBAL SIMULATED RESEARCH KNOWLEDGE BASE ---
 AUTOMATED_RESEARCH_DB = {
@@ -136,7 +133,6 @@ ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_tra
 
 # --- SIDEBAR CONTROL PANEL ---
 st.sidebar.header("🌍 Mobile Selector Panel")
-# FIXED: Converted text fields to instant-rerun selectboxes to end state freeze bugs
 team_list = league_df["Team"].tolist()
 home_team = st.sidebar.selectbox("Choose Home Team", team_list, index=0)
 away_team = st.sidebar.selectbox("Choose Away Team", team_list, index=1)
@@ -172,10 +168,16 @@ def identify_league(team_string):
 home_league_label = identify_league(home_team)
 away_league_label = identify_league(away_team)
 
-# AI AUTO-OPTIMIZED DISTRIBUTION CONSTRAINTS
-ai_calculated_rho = float(np.clip(-0.05 + (float(ctx["ref_strict"]) * -0.02), -0.15, 0.15))
-ai_calculated_cap = int(np.clip(10 + int(float(ctx["motivation_delta"]) * 5), 6, 15))
-fatigue_val = min(1.5, float(ctx["travel_km"]) / 500.0)
+# CRITICAL FIX: Cast elements strictly into native float variables to bypass Series transformation mismatch errors
+clean_weather = float(ctx["weather_val"])
+clean_pitch = float(ctx["pitch_val"])
+clean_strictness = float(ctx["ref_strict"])
+clean_motivation = float(ctx["motivation_delta"])
+clean_travel = float(ctx["travel_km"])
+
+ai_calculated_rho = float(np.clip(-0.05 + (clean_strictness * -0.02), -0.15, 0.15))
+ai_calculated_cap = int(np.clip(10 + int(clean_motivation * 5), 6, 15))
+fatigue_val = min(1.5, clean_travel / 500.0)
 
 squad_integrity_coef = 1.0
 ocr_logs_text = []
@@ -192,19 +194,17 @@ if parsed_text_list:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
 
-# Process Machine Learning Weights
-live_input_df = pd.DataFrame(
-    [[float(ctx["weather_val"]), float(ctx["pitch_val"]), float(fatigue_val), float(ctx["ref_strict"]), float(ctx["motivation_delta"]), float(squad_integrity_coef)]],
-    columns=feature_columns
-)
-live_input_scaled = scaler.transform(live_input_df)
+# Pass sanitized metrics inside the 2D frame block
+raw_vector = np.array([[clean_weather, clean_pitch, fatigue_val, clean_strictness, clean_motivation, squad_integrity_coef]], dtype=float)
+live_input_scaled = scaler.transform(raw_vector)
 
 ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
 ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 def get_team_metrics(name, role):
     match_row = league_df[league_df["Team"] == name]
-    if not match_row.empty: return float(match_row[role].values[0])
+    if not match_row.empty: 
+        return float(match_row[role].values[0])
     return 1.75
 
 att_h = get_team_metrics(home_team, "Attack_Rating")
@@ -213,3 +213,5 @@ att_a = get_team_metrics(away_team, "Attack_Rating")
 def_h = get_team_metrics(home_team, "Defense_Rating")
 
 match_row_adv = league_df[league_df["Team"] == home_team]
+home_adv = float(match_row_adv["Home_Advantage"].values[0]) if not match_row_adv.empty else 0.20
+
