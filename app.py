@@ -722,6 +722,7 @@ def context_multiplier(
 
     attack *= 1 + rest_effect
     defense *= 1 - rest_effect * 0.45
+
     if second_leg:
         if aggregate_for < aggregate_against:
             attack *= 1.045
@@ -821,9 +822,8 @@ def poisson_pmf(k, lam):
         return 1.0 if k == 0 else 0.0
     return math.exp(-lam) * (lam ** k) / math.factorial(k)
 
-    if second_leg:
-        if aggregate_for < aggregate_against:
-            def calculate_matrix(home_xg, away_xg, max_goals=10, rho=-0.05):
+
+def calculate_matrix(home_xg, away_xg, max_goals=10, rho=-0.05):
     matrix = []
     total = 0.0
 
@@ -986,7 +986,8 @@ def run_monte_carlo(home_xg, away_xg, n_sims, seed=42):
             "over_45",
             "btts_yes",
         ]
-                }
+    }
+
     result["samples"] = n_sims
     result["average_goals"] = total_goals / n_sims
     result["top_scores"] = [
@@ -1117,7 +1118,8 @@ def value_analysis(matrix_result, odds_rows, home_team, away_team):
             "Model Fair Odds": fair,
             "Potential Value": value_flag,
         })
-        return rows
+
+    return rows
 
 # ============================================================
 # EXPLANATION ENGINE
@@ -1229,7 +1231,8 @@ def build_explanation(
         )
 
     return reasons, risks
-            # ============================================================
+
+# ============================================================
 # DATA COVERAGE
 # ============================================================
 
@@ -1329,7 +1332,8 @@ if page == "Prediction History":
     display_df["Model"] = display_df[
         ["home_probability", "draw_probability", "away_probability"]
     ].max(axis=1).map(lambda x: f"{x * 100:.1f}%")
-                        columns = [
+
+    columns = [
         "id",
         "created_at",
         "match_date",
@@ -1460,6 +1464,7 @@ if not API_FOOTBALL_KEY:
         "The API provides fixtures, team data, head-to-head, injuries, lineups and odds."
     )
     st.stop()
+
 # ------------------------------------------------------------
 # Fixture input
 # ------------------------------------------------------------
@@ -1595,7 +1600,8 @@ if analyze:
     # --------------------------------------------------------
     # Optional web research
     # --------------------------------------------------------
-web_research = None
+
+    web_research = None
 
     if TAVILY_API_KEY or SERPER_API_KEY:
         with st.spinner("Checking relevant web information..."):
@@ -1768,6 +1774,7 @@ web_research = None
         f"Most likely exact score: **{top_score[0]}-{top_score[1]}** "
         f"({top_score[2] * 100:.2f}%)"
     )
+
     # --------------------------------------------------------
     # Why MATCHLAB produced the result
     # --------------------------------------------------------
@@ -1906,7 +1913,42 @@ web_research = None
         )
     else:
         st.caption("Confirmed lineups are not yet available or not covered for this fixture.")
-# --------------------------------------------------------
+
+    # --------------------------------------------------------
+    # H2H
+    # --------------------------------------------------------
+
+    st.subheader("7. Previous Head-to-Head")
+
+    if h2h:
+        h2h_rows = []
+        for item in h2h[:10]:
+            h = item.get("teams", {}).get("home", {}).get("name", "")
+            a = item.get("teams", {}).get("away", {}).get("name", "")
+            hg = item.get("goals", {}).get("home")
+            ag = item.get("goals", {}).get("away")
+            dt = item.get("fixture", {}).get("date", "")[:10]
+            comp = item.get("league", {}).get("name", "")
+            h2h_rows.append({
+                "Date": dt,
+                "Competition": comp,
+                "Match": f"{h} vs {a}",
+                "Score": f"{hg}-{ag}",
+            })
+
+        st.dataframe(
+            pd.DataFrame(h2h_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.caption(
+            "H2H is contextual evidence only; recent team strength is weighted more heavily."
+        )
+    else:
+        st.info("No head-to-head history was returned.")
+
+    # --------------------------------------------------------
     # Goal markets
     # --------------------------------------------------------
 
@@ -2050,8 +2092,9 @@ web_research = None
         st.info(
             "No usable 1X2 bookmaker odds were returned. "
             "The prediction remains independent of market prices."
-    )
-        # --------------------------------------------------------
+        )
+
+    # --------------------------------------------------------
     # Confidence / coverage
     # --------------------------------------------------------
 
@@ -2138,5 +2181,3 @@ web_research = None
         "This is a probabilistic football model, not a guarantee. Data coverage varies by competition, "
         "and some injury, lineup and statistical fields may be missing or delayed."
     )
-    
-  
