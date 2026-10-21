@@ -328,12 +328,22 @@ st.dataframe(summary, use_container_width=True, hide_index=True)
 with st.expander("Model checks and limitations"):
     st.write(f"1X2 probability sum: {results['result_probability_sum'] * 100:.6f}%")
     st.write(f"Estimated independent Poisson mass beyond the selected score limit: {results['omitted_mass_estimate'] * 100:.6f}%")
-    st.write("""
-    The engine uses illustrative manually entered team ratings, a home-advantage term,
-    a Poisson score model and a Dixon-Coles low-score correction. Form, formation, weather,
-    absence and motivation controls use small heuristic adjustments; they are not verified
-    real-world effects and have not been calibrated on historical matches. The absence
-    player-name fields are notes only: the model uses the selected role-impact level and
-    counts, not individual player statistics. Leaving optional context at its default keeps
-    that context neutral. No live fixtures, weather, injuries, lineups or 2026/2027 results
-    are fetched automatically. To claim real-worl
+        st.write("""
+    MATCHLAB uses manually entered team ratings and a statistical
+    Poisson model with a Dixon-Coles low-score correction.
+
+    Form, formation, injury and motivation adjustments use
+    heuristic estimates and have not been calibrated against
+    historical match data.
+
+    Optional context fields are not verified automatically.
+    No live fixtures, weather, injuries, lineups or player
+    statistics are retrieved unless external data sources
+    are connected.
+
+    The model provides probability estimates, not guaranteed
+    outcomes. Historical backtesting is required to evaluate
+    predictive accuracy.
+    """)
+
+st.caption("MATCHLAB provides statistical estimates, not guaranteed outcomes.")
