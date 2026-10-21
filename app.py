@@ -88,6 +88,7 @@ AUTOMATED_RESEARCH_DB = {
 }
 
 # --- 3. BACKGROUND TRAINING CORE ENGINE ---
+feature_columns = ["weather", "pitch", "fatigue", "strictness", "motivation", "integrity"]
 np.random.seed(42)
 sim_records = 200
 X_train_mock = np.zeros((sim_records, 6))
@@ -105,8 +106,11 @@ for idx in range(sim_records):
     y_train_h_xg[idx] = (1.6 * w * p * s) + m
     y_train_a_xg[idx] = (1.2 * w * p * s) - (t * 0.1)
 
+# Training on DataFrame to enforce column synchronization parameters
+X_train_df = pd.DataFrame(X_train_mock, columns=feature_columns)
 scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train_mock)
+X_train_scaled = scaler.fit_transform(X_train_df)
+
 ai_home_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_h_xg)
 ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_a_xg)
 
@@ -166,17 +170,20 @@ if parsed_text_list:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Roster Alert:** Star player {star.capitalize()} absent from line-up tracking feed.")
 
-# Compute ML patterns
-live_input_vector = np.array([[ctx["weather_val"], ctx["pitch_val"], fatigue_val, ctx["ref_strict"], ctx["motivation_delta"], squad_integrity_coef]])
-live_input_scaled = scaler.transform(live_input_vector)
+# FIXED: Wrapped live input matrix elements inside labeled DataFrame rows to ensure safe parsing vector shapes
+live_input_df = pd.DataFrame(
+    [[ctx["weather_val"], ctx["pitch_val"], fatigue_val, ctx["ref_strict"], ctx["motivation_delta"], squad_integrity_coef]],
+    columns=feature_columns
+)
+live_input_scaled = scaler.transform(live_input_df)
 
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled))
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled))
+ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
+ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 def get_team_metrics(name, role):
     match_row = league_df[league_df["Team"] == name.lower()]
     if not match_row.empty:
-        return float(match_row[role].values)
+        return float(match_row[role].values[0])
     return 1.75 if role == "Attack_Rating" else 1.15
 
 att_h = get_team_metrics(home_team, "Attack_Rating")
@@ -185,7 +192,7 @@ att_a = get_team_metrics(away_team, "Attack_Rating")
 def_h = get_team_metrics(home_team, "Defense_Rating")
 
 match_row_adv = league_df[league_df["Team"] == home_team.lower()]
-home_adv = float(match_row_adv["Home_Advantage"].values) if not match_row_adv.empty else 0.20
+home_adv = float(match_row_adv["Home_Advantage"].values[0]) if not match_row_adv.empty else 0.20
 
 final_hxg = max(0.15, (att_h * def_a) + home_adv + (ai_adjustment_h - 1.5))
 final_axg = max(0.15, (att_a * def_h) + (ai_adjustment_a - 1.2))
@@ -204,7 +211,6 @@ with a_col1:
     st.write(f"📊 **AI Optimized Scoreline Cap Range Matrix Limit:** `{ai_calculated_cap}` goals")
 with a_col2:
     st.info("### 🏃‍♂️ Travel Fatigue Impact Analysis")
-    # DEEP HISTORICAL TRAVEL FATIGUE EXPLANATION
     if ctx["travel_km"] > 100:
         st.write(
             f"⚠️ **Away Travel Fatigue Vector Alert:** The away team has covered a distance of `{ctx['travel_km']}km`. "
@@ -215,11 +221,3 @@ with a_col2:
     else:
         st.write(f"✅ **Travel Fatigue Baseline:** Distance (`{ctx['travel_km']}km`) falls below strain limits. Standard baseline performance vectors retained.")
 
-if ocr_logs_text:
-    st.info("### 🔍 Computer Vision Lineup Audit Logs")
-    for log in ocr_logs_text: st.markdown(log)
-
-# Calculate outcome spreads
-odds_h, odds_d, odds_a = ctx["closing_h"], ctx["closing_d"], ctx["closing_a"]
-result = calculate(final_hxg, final_axg, ai_calculated_cap, ai_calculated_rho)
-        
