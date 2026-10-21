@@ -303,6 +303,61 @@ with st.expander("Model checks and limitations"):
     """)
 
 st.caption("MATCHLAB provides statistical estimates, not guaranteed outcomes.")
+home_display: results["home_win"],
+    "Draw": results["draw"],
+    away_display: results["away_win"],
+}
+model_pick = max(outcomes, key=outcomes.get)
+model_probability = outcomes[model_pick]
+best_score, best_score_probability = results["top_scores"][0]
+
+st.subheader("Model Verdict")
+st.success(f"Most probable 1X2 outcome: {model_pick} ({model_probability * 100:.1f}%)")
+st.caption(confidence_label(model_probability) + " — this is a probability band, not a guarantee of accuracy.")
+st.info(
+    f"Most likely correct score: {best_score[0]}-{best_score[1]} "
+    f"({best_score_probability * 100:.2f}%)"
+)
+
+st.subheader("Most Likely Correct Scores")
+score_rows = [
+    {
+        "Score": f"{h}-{a}",
+        "Probability": f"{p * 100:.2f}%",
+        "Fair Odds": round(fair_odds(p), 2),
+    }
+    for (h, a), p in results["top_scores"]
+]
+st.dataframe(pd.DataFrame(score_rows), use_container_width=True, hide_index=True)
+
+st.subheader("Prediction Summary")
+summary = pd.DataFrame({
+    "Market": ["Home Win", "Draw", "Away Win", "Over 1.5", "Over 2.5", "Over 3.5", "BTTS Yes"],
+    "Probability": [
+        results["home_win"], results["draw"], results["away_win"],
+        results["over_15"], results["over_25"], results["over_35"], results["btts"],
+    ],
+})
+summary["Probability"] = (summary["Probability"] * 100).round(1).astype(str) + "%"
+st.dataframe(summary, use_container_width=True, hide_index=True)
+
+with st.expander("Model checks and limitations"):
+    st.write(f"1X2 probability sum: {results['result_probability_sum'] * 100:.6f}%")
+    st.write(f"Estimated independent Poisson mass beyond the selected score limit: {results['omitted_mass_estimate'] * 100:.6f}%")
+    st.write("""
+    The engine combines manually supplied attacking and defensive ratings, home advantage,
+    form multipliers and a weather/pitch multiplier. It then applies independent Poisson
+    goal probabilities with a Dixon-Coles low-score correction and normalizes the finite
+    score matrix.
+
+    Team ratings are illustrative and are not automatically updated from live results.
+    Form and weather controls are assumptions entered by the user. To assess predictive
+    quality, fit ratings from verified historical matches and run a chronological
+    backtest using metrics such as log loss and Brier score. Displayed fair odds are
+    the reciprocal of model probabilities and exclude bookmaker margin.
+    """)
+
+st.caption("MATCHLAB provides statistical estimates, not guaranteed outcomes.")
 _key)
 
 
