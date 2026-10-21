@@ -73,11 +73,10 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     }
 
 # --- 1. HISTORICAL REGISTRY BASELINES & LEAGUE MAPPING DATABASE ---
-# FIXED: All lists below contain EXACTLY 12 matching items to prevent structural length errors
 historical_teams_data = {
     "Team": [
-        "aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", 
-        "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"
+        "Aston Villa", "Manchester City", "Arsenal", "Liverpool", "Chelsea", "Manchester United", 
+        "Real Madrid", "Barcelona", "Bayern Munich", "Inter Milan", "PSG", "Juventus"
     ],
     "Attack_Rating": [1.65, 2.30, 2.10, 2.25, 1.80, 1.45, 2.40, 2.05, 2.35, 1.95, 2.15, 1.60],
     "Defense_Rating": [1.20, 0.90, 0.85, 0.95, 1.35, 1.40, 0.88, 1.05, 1.10, 0.80, 1.15, 0.90],
@@ -136,9 +135,11 @@ ai_home_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_tra
 ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_a_xg)
 
 # --- SIDEBAR CONTROL PANEL ---
-st.sidebar.header("🌍 Global Search Platform")
-input_home_raw = st.sidebar.text_input("Type Home Team Name", "Aston Villa")
-input_away_raw = st.sidebar.text_input("Type Away Team Name", "Manchester City")
+st.sidebar.header("🌍 Mobile Selector Panel")
+# FIXED: Converted text fields to instant-rerun selectboxes to end state freeze bugs
+team_list = league_df["Team"].tolist()
+home_team = st.sidebar.selectbox("Choose Home Team", team_list, index=0)
+away_team = st.sidebar.selectbox("Choose Away Team", team_list, index=1)
 
 st.sidebar.header("📷 Lineup Image Stream")
 lineup_source = st.sidebar.radio("Scanner", ["Off", "Camera", "Upload"])
@@ -158,19 +159,15 @@ if img_buffer is not None:
             parsed_text_list = [text_val for (bbox, text_val, prob) in ocr_results]
         except Exception as cv_error: st.sidebar.error(f"Scanner fault: {cv_error}")
 
-# Clean and normalize strings case-independently
-home_team = input_home_raw.strip()
-away_team = input_away_raw.strip()
 lookup_key = f"{home_team.lower()} vs {away_team.lower()}"
-
 ctx = AUTOMATED_RESEARCH_DB.get(lookup_key, AUTOMATED_RESEARCH_DB["default"])
 
 # --- AUTOMATED LEAGUE LOGIC IDENTIFIER ---
 def identify_league(team_string):
-    match = league_df[league_df["Team"] == team_string.lower()]
+    match = league_df[league_df["Team"] == team_string]
     if not match.empty:
         return str(match["League_Name"].values[0])
-    return "Global Division (Discovered Tier Baseline)"
+    return "Global Division"
 
 home_league_label = identify_league(home_team)
 away_league_label = identify_league(away_team)
@@ -195,7 +192,7 @@ if parsed_text_list:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
 
-# Enforce clean pure floating-point types inside the prediction array frame
+# Process Machine Learning Weights
 live_input_df = pd.DataFrame(
     [[float(ctx["weather_val"]), float(ctx["pitch_val"]), float(fatigue_val), float(ctx["ref_strict"]), float(ctx["motivation_delta"]), float(squad_integrity_coef)]],
     columns=feature_columns
@@ -206,8 +203,13 @@ ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
 ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 def get_team_metrics(name, role):
-    match_row = league_df[league_df["Team"] == name.lower()]
+    match_row = league_df[league_df["Team"] == name]
     if not match_row.empty: return float(match_row[role].values[0])
-    return 1.75 if role == "Attack_Rating" else 1.15
+    return 1.75
 
 att_h = get_team_metrics(home_team, "Attack_Rating")
+def_a = get_team_metrics(away_team, "Defense_Rating")
+att_a = get_team_metrics(away_team, "Attack_Rating")
+def_h = get_team_metrics(home_team, "Defense_Rating")
+
+match_row_adv = league_df[league_df["Team"] == home_team]
