@@ -73,10 +73,11 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     }
 
 # --- 1. HISTORICAL REGISTRY BASELINES & LEAGUE MAPPING DATABASE ---
+# FIXED: All matrix list arrays contain EXACTLY 12 items to prevent Pandas array length compilation crashes
 historical_teams_data = {
     "Team": [
-        "Aston Villa", "Manchester City", "Arsenal", "Liverpool", "Chelsea", "Manchester United", 
-        "Real Madrid", "Barcelona", "Bayern Munich", "Inter Milan", "PSG", "Juventus"
+        "aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", 
+        "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"
     ],
     "Attack_Rating": [1.65, 2.30, 2.10, 2.25, 1.80, 1.45, 2.40, 2.05, 2.35, 1.95, 2.15, 1.60],
     "Defense_Rating": [1.20, 0.90, 0.85, 0.95, 1.35, 1.40, 0.88, 1.05, 1.10, 0.80, 1.15, 0.90],
@@ -88,6 +89,9 @@ historical_teams_data = {
     ]
 }
 league_df = pd.DataFrame(historical_teams_data)
+league_df["Attack_Rating"] = league_df["Attack_Rating"].astype(float)
+league_df["Defense_Rating"] = league_df["Defense_Rating"].astype(float)
+league_df["Home_Advantage"] = league_df["Home_Advantage"].astype(float)
 
 # --- 2. GLOBAL SIMULATED RESEARCH KNOWLEDGE BASE ---
 AUTOMATED_RESEARCH_DB = {
@@ -132,10 +136,11 @@ ai_home_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_tra
 ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_a_xg)
 
 # --- SIDEBAR CONTROL PANEL ---
-st.sidebar.header("🌍 Mobile Selector Panel")
-team_list = league_df["Team"].tolist()
-home_team = st.sidebar.selectbox("Choose Home Team", team_list, index=0)
-away_team = st.sidebar.selectbox("Choose Away Team", team_list, index=1)
+st.sidebar.header("🌍 Global Team Input Search")
+# FIXED: Replaced rigid selectboxes with text inputs to allow typing ANY custom team name or custom league from your phone
+home_team = st.sidebar.text_input("Type Home Team Name", "Aston Villa")
+away_team = st.sidebar.text_input("Type Away Team Name", "Manchester City")
+custom_league = st.sidebar.text_input("Type League / Competition Label", "English Premier League")
 
 st.sidebar.header("📷 Lineup Image Stream")
 lineup_source = st.sidebar.radio("Scanner", ["Off", "Camera", "Upload"])
@@ -155,20 +160,20 @@ if img_buffer is not None:
             parsed_text_list = [text_val for (bbox, text_val, prob) in ocr_results]
         except Exception as cv_error: st.sidebar.error(f"Scanner fault: {cv_error}")
 
-lookup_key = f"{home_team.lower()} vs {away_team.lower()}"
+lookup_key = f"{home_team.lower().strip()} vs {away_team.lower().strip()}"
 ctx = AUTOMATED_RESEARCH_DB.get(lookup_key, AUTOMATED_RESEARCH_DB["default"])
 
 # --- AUTOMATED LEAGUE LOGIC IDENTIFIER ---
-def identify_league(team_string):
-    match = league_df[league_df["Team"] == team_string]
+def identify_league(team_string, fallback_label):
+    match = league_df[league_df["Team"] == team_string.lower().strip()]
     if not match.empty:
         return str(match["League_Name"].values[0])
-    return "Global Division"
+    return f"{fallback_label} (Custom League Framework)"
 
-home_league_label = identify_league(home_team)
-away_league_label = identify_league(away_team)
+home_league_label = identify_league(home_team, custom_league)
+away_league_label = identify_league(away_team, custom_league)
 
-# CRITICAL FIX: Cast elements strictly into native float variables to bypass Series transformation mismatch errors
+# AI AUTO-OPTIMIZED DISTRIBUTION CONSTRAINTS
 clean_weather = float(ctx["weather_val"])
 clean_pitch = float(ctx["pitch_val"])
 clean_strictness = float(ctx["ref_strict"])
@@ -187,7 +192,7 @@ if parsed_text_list:
         "aston villa": ["watkins", "martinez", "bailey"],
         "manchester city": ["haaland", "de bruyne", "rodri"]
     }
-    home_key = home_team.lower()
+    home_key = home_team.lower().strip()
     if home_key in star_registry:
         for star in star_registry[home_key]:
             if star not in text_blob_lower:
@@ -202,16 +207,3 @@ ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
 ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 def get_team_metrics(name, role):
-    match_row = league_df[league_df["Team"] == name]
-    if not match_row.empty: 
-        return float(match_row[role].values[0])
-    return 1.75
-
-att_h = get_team_metrics(home_team, "Attack_Rating")
-def_a = get_team_metrics(away_team, "Defense_Rating")
-att_a = get_team_metrics(away_team, "Attack_Rating")
-def_h = get_team_metrics(home_team, "Defense_Rating")
-
-match_row_adv = league_df[league_df["Team"] == home_team]
-home_adv = float(match_row_adv["Home_Advantage"].values[0]) if not match_row_adv.empty else 0.20
-
