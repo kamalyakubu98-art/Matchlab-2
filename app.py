@@ -57,7 +57,7 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     away_score = sum(p for (h,a),p in scores.items() if a > 0)
     
     # FIXED MATRIX SORT LINE
-    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    top = sorted(scores.items(), key=lambda kv: kv, reverse=True)[:10]
 
     return {
         "home_win": home_win, "draw": draw, "away_win": away_win,
@@ -71,10 +71,10 @@ st.sidebar.header("🔑 1. API-Sports Connection")
 api_key = st.sidebar.text_input("Enter API-Sports Key", type="password")
 league_id = st.sidebar.number_input("League ID (EPL = 39)", min_value=1, value=39)
 
-home_team = "Home Team"
-away_team = "Away Team"
+home_team = "Aston Villa"
+away_team = "Manchester City"
 odds_h, odds_d, odds_a = 2.10, 3.40, 3.20
-base_hxg, base_axg = 1.50, 1.10
+base_hxg, base_axg = 1.55, 1.10
 
 # Initialize live request pipelines if token exists
 if api_key:
@@ -87,10 +87,13 @@ if api_key:
             res = requests.get(url, headers=headers).json()
             
             if "response" in res and res["response"]:
-                fixture_options = {
-                    f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}": f
-                    for f in res["response"]
-                }
+                fixture_options = {}
+                for f in res["response"]:
+                    h_name = f['teams']['home']['name']
+                    a_name = f['teams']['away']['name']
+                    label = f"{h_name} vs {a_name}"
+                    fixture_options[label] = f
+                    
                 selected_match_str = st.sidebar.selectbox("Select Active Live Fixture", list(fixture_options.keys()))
                 
                 if selected_match_str:
@@ -104,17 +107,21 @@ if api_key:
                     odds_res = requests.get(odds_url, headers=headers).json()
                     
                     if "response" in odds_res and odds_res["response"]:
-                        bookmakers = odds_res["response"][0].get("bookmakers", [])
+                        data_block = odds_res["response"][0]
+                        bookmakers = data_block.get("bookmakers", [])
                         if bookmakers:
                             markets = bookmakers[0].get("markets", [])
                             for m in markets:
-                                if m["value"] == "Match Winner":
+                                if m["name"] == "Match Winner":
                                     for o in m["outcomes"]:
-                                        if o["value"] == "Home": odds_h = float(o["odd"])
-                                        elif o["value"] == "Draw": odds_d = float(o["odd"])
-                                        elif o["value"] == "Away": odds_a = float(o["odd"])
+                                        if o["name"] == "Home":
+                                            odds_h = float(o["price"])
+                                        elif o["name"] == "Draw":
+                                            odds_d = float(o["price"])
+                                        elif o["name"] == "Away":
+                                            odds_a = float(o["price"])
             else:
-                st.sidebar.error("Invalid API Key or No Fixtures Found.")
+                st.sidebar.error("No upcoming matches found or invalid token.")
         except Exception as api_err:
             st.sidebar.error(f"API Fetch Failure: {api_err}")
 
@@ -204,12 +211,3 @@ if parsed_text_list:
                 xG_downgrade_reasons.append(
                     f"⚠️ **{home_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
                     f"Baseline dropped by -{player['weight']*100:.0f}%. Reason: {player['reason']}."
-                )
-                
-    away_key = away_team.strip().lower()
-    if away_key in roster_db:
-        for player in roster_db[away_key]:
-            if player["name"].lower() not in text_blob_lower:
-                lineup_penalty_multiplier_a -= player["weight"]
-                xG_downgrade_reasons.append(
-    
