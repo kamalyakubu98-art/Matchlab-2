@@ -77,10 +77,14 @@ historical_teams_data = {
     "Team": ["aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"],
     "Attack_Rating": [1.65, 2.30, 2.10, 2.25, 1.80, 1.45, 2.40, 2.05, 2.35, 1.95, 2.15, 1.60],
     "Defense_Rating": [1.20, 0.90, 0.85, 0.95, 1.35, 1.40, 0.88, 1.05, 1.10, 0.80, 1.15, 0.90],
-    "Home_Advantage": [0.25, 0.30, 0.22, 0.35, 0.15, 0.10, 0.32, 0.28, 0.30, 0.25, 0.20, 0.18],
+    "Home_Advantage": [0.25, 0.30, 0.22, 0.35, 0.15, 0.10],
     "League_Name": ["English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "La Liga (Spain)", "La Liga (Spain)", "Bundesliga (Germany)", "Serie A (Italy)", "Ligue 1 (France)", "Serie A (Italy)"]
 }
+# Enforce native numeric types upon dataframe initialization
 league_df = pd.DataFrame(historical_teams_data)
+league_df["Attack_Rating"] = league_df["Attack_Rating"].astype(float)
+league_df["Defense_Rating"] = league_df["Defense_Rating"].astype(float)
+league_df["Home_Advantage"] = league_df["Home_Advantage"].astype(float)
 
 # --- 2. GLOBAL SIMULATED RESEARCH KNOWLEDGE BASE ---
 AUTOMATED_RESEARCH_DB = {
@@ -147,6 +151,7 @@ if img_buffer is not None:
             parsed_text_list = [text_val for (bbox, text_val, prob) in ocr_results]
         except Exception as cv_error: st.sidebar.error(f"Scanner fault: {cv_error}")
 
+# Clean and normalize strings case-independently
 home_team = input_home_raw.strip()
 away_team = input_away_raw.strip()
 lookup_key = f"{home_team.lower()} vs {away_team.lower()}"
@@ -164,9 +169,9 @@ home_league_label = identify_league(home_team)
 away_league_label = identify_league(away_team)
 
 # AI AUTO-OPTIMIZED DISTRIBUTION CONSTRAINTS
-ai_calculated_rho = float(np.clip(-0.05 + (ctx["ref_strict"] * -0.02), -0.15, 0.15))
-ai_calculated_cap = int(np.clip(10 + int(ctx["motivation_delta"] * 5), 6, 15))
-fatigue_val = min(1.5, ctx["travel_km"] / 500.0)
+ai_calculated_rho = float(np.clip(-0.05 + (float(ctx["ref_strict"]) * -0.02), -0.15, 0.15))
+ai_calculated_cap = int(np.clip(10 + int(float(ctx["motivation_delta"]) * 5), 6, 15))
+fatigue_val = min(1.5, float(ctx["travel_km"]) / 500.0)
 
 squad_integrity_coef = 1.0
 ocr_logs_text = []
@@ -183,7 +188,7 @@ if parsed_text_list:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
 
-# FIXED: Nested array structure double brackets [[ ... ]] inside DataFrame initialization enforces exact 2D shape formatting
+# Enforce clean pure floating-point types inside the prediction array frame
 live_input_df = pd.DataFrame(
     [[float(ctx["weather_val"]), float(ctx["pitch_val"]), float(fatigue_val), float(ctx["ref_strict"]), float(ctx["motivation_delta"]), float(squad_integrity_coef)]],
     columns=feature_columns
@@ -201,8 +206,4 @@ def get_team_metrics(name, role):
 att_h = get_team_metrics(home_team, "Attack_Rating")
 def_a = get_team_metrics(away_team, "Defense_Rating")
 att_a = get_team_metrics(away_team, "Attack_Rating")
-def_h = get_team_metrics(home_team, "Defense_Rating")
-
-match_row_adv = league_df[league_df["Team"] == home_team.lower()]
-home_adv = float(match_row_adv["Home_Advantage"].values[0]) if not match_row_adv.empty else 0.20
-
+    
