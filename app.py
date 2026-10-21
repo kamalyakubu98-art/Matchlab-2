@@ -73,7 +73,6 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     }
 
 # --- 1. HISTORICAL REGISTRY BASELINES & LEAGUE MAPPING DATABASE ---
-# FIXED: All matrix list arrays contain EXACTLY 12 items to prevent Pandas array length compilation crashes
 historical_teams_data = {
     "Team": [
         "aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", 
@@ -137,7 +136,6 @@ ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_tra
 
 # --- SIDEBAR CONTROL PANEL ---
 st.sidebar.header("🌍 Global Team Input Search")
-# FIXED: Replaced rigid selectboxes with text inputs to allow typing ANY custom team name or custom league from your phone
 home_team = st.sidebar.text_input("Type Home Team Name", "Aston Villa")
 away_team = st.sidebar.text_input("Type Away Team Name", "Manchester City")
 custom_league = st.sidebar.text_input("Type League / Competition Label", "English Premier League")
@@ -160,18 +158,19 @@ if img_buffer is not None:
             parsed_text_list = [text_val for (bbox, text_val, prob) in ocr_results]
         except Exception as cv_error: st.sidebar.error(f"Scanner fault: {cv_error}")
 
-lookup_key = f"{home_team.lower().strip()} vs {away_team.lower().strip()}"
+# Clean and normalize strings case-independently
+home_clean = home_team.strip().lower()
+away_clean = away_team.strip().lower()
+lookup_key = f"{home_clean} vs {away_clean}"
+
 ctx = AUTOMATED_RESEARCH_DB.get(lookup_key, AUTOMATED_RESEARCH_DB["default"])
 
 # --- AUTOMATED LEAGUE LOGIC IDENTIFIER ---
-def identify_league(team_string, fallback_label):
-    match = league_df[league_df["Team"] == team_string.lower().strip()]
-    if not match.empty:
-        return str(match["League_Name"].values[0])
-    return f"{fallback_label} (Custom League Framework)"
+match_h = league_df[league_df["Team"] == home_clean]
+home_league_label = str(match_h["League_Name"].values[0]) if not match_h.empty else f"{custom_league} (Custom Tier)"
 
-home_league_label = identify_league(home_team, custom_league)
-away_league_label = identify_league(away_team, custom_league)
+match_a = league_df[league_df["Team"] == away_clean]
+away_league_label = str(match_a["League_Name"].values[0]) if not match_a.empty else f"{custom_league} (Custom Tier)"
 
 # AI AUTO-OPTIMIZED DISTRIBUTION CONSTRAINTS
 clean_weather = float(ctx["weather_val"])
@@ -192,9 +191,8 @@ if parsed_text_list:
         "aston villa": ["watkins", "martinez", "bailey"],
         "manchester city": ["haaland", "de bruyne", "rodri"]
     }
-    home_key = home_team.lower().strip()
-    if home_key in star_registry:
-        for star in star_registry[home_key]:
+    if home_clean in star_registry:
+        for star in star_registry[home_clean]:
             if star not in text_blob_lower:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
@@ -203,7 +201,9 @@ if parsed_text_list:
 raw_vector = np.array([[clean_weather, clean_pitch, fatigue_val, clean_strictness, clean_motivation, squad_integrity_coef]], dtype=float)
 live_input_scaled = scaler.transform(raw_vector)
 
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
+ai_adjustment_h = float(ai_home_model.predict(live_input_scaled))
+ai_adjustment_a = float(ai_away_model.predict(live_input_scaled))
 
-def get_team_metrics(name, role):
+# Flat Team Metrics Lookups
+match_h_metrics = league_df[league_df["Team"] == home_clean]
+att_h = float(match_h_metrics["Attack_Rating"].values[0]) if not match_h_metrics.empty else 1.75
