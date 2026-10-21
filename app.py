@@ -6,7 +6,6 @@ import cv2
 import numpy as np
 import requests
 
-# Lazy load EasyOCR only when an image is processed to conserve mobile runtime memory
 @st.cache_resource
 def get_ocr_reader():
     import easyocr
@@ -14,12 +13,9 @@ def get_ocr_reader():
 
 st.set_page_config(page_title="MatchLab Pro v3.5", page_icon="⚽", layout="wide")
 st.title("⚽ MatchLab 3.5 Pro (Context Intelligence)")
-st.caption("Advanced football probability platform · Live API Automation · Explanatory Context Logic")
+st.caption("Advanced football probability platform · Live API Automation")
 
-st.warning(
-    "Prototype notice: Context adjustments modify base statistical baselines. "
-    "Use analytical discipline when grading subjective parameters."
-)
+st.warning("Prototype notice: Context adjustments modify base statistical baselines.")
 
 def poisson_pmf(k, lam):
     if lam <= 0:
@@ -56,8 +52,7 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     home_score = sum(p for (h,a),p in scores.items() if h > 0)
     away_score = sum(p for (h,a),p in scores.items() if a > 0)
     
-    # FIXED MATRIX SORT LINE
-    top = sorted(scores.items(), key=lambda kv: kv, reverse=True)[:10]
+    top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:10]
 
     return {
         "home_win": home_win, "draw": draw, "away_win": away_win,
@@ -66,7 +61,7 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
         "top": [(f"{h}-{a}", p) for (h,a), p in top]
     }
 
-# --- SIDEBAR: Live Data Automation Framework ---
+# --- SIDEBAR: Data Inputs ---
 st.sidebar.header("🔑 1. API-Sports Connection")
 api_key = st.sidebar.text_input("Enter API-Sports Key", type="password")
 league_id = st.sidebar.number_input("League ID (EPL = 39)", min_value=1, value=39)
@@ -76,54 +71,38 @@ away_team = "Manchester City"
 odds_h, odds_d, odds_a = 2.10, 3.40, 3.20
 base_hxg, base_axg = 1.55, 1.10
 
-# Initialize live request pipelines if token exists
 if api_key:
     headers = {'x-apisports-key': api_key}
-    
-    # Fetch upcoming fixture cards
     with st.sidebar.spinner("Fetching live fixture schedule..."):
         try:
             url = f"https://api-sports.io{league_id}&next=10"
             res = requests.get(url, headers=headers).json()
-            
             if "response" in res and res["response"]:
                 fixture_options = {}
                 for f in res["response"]:
-                    h_name = f['teams']['home']['name']
-                    a_name = f['teams']['away']['name']
-                    label = f"{h_name} vs {a_name}"
+                    label = f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}"
                     fixture_options[label] = f
-                    
                 selected_match_str = st.sidebar.selectbox("Select Active Live Fixture", list(fixture_options.keys()))
-                
                 if selected_match_str:
                     match_data = fixture_options[selected_match_str]
                     fixture_id = match_data["fixture"]["id"]
                     home_team = match_data["teams"]["home"]["name"]
                     away_team = match_data["teams"]["away"]["name"]
                     
-                    # Call API Odds data layer for selected fixture match ID
                     odds_url = f"https://api-sports.io{fixture_id}"
                     odds_res = requests.get(odds_url, headers=headers).json()
-                    
                     if "response" in odds_res and odds_res["response"]:
-                        data_block = odds_res["response"][0]
-                        bookmakers = data_block.get("bookmakers", [])
+                        bookmakers = odds_res["response"][0].get("bookmakers", [])
                         if bookmakers:
                             markets = bookmakers[0].get("markets", [])
                             for m in markets:
                                 if m["name"] == "Match Winner":
                                     for o in m["outcomes"]:
-                                        if o["name"] == "Home":
-                                            odds_h = float(o["price"])
-                                        elif o["name"] == "Draw":
-                                            odds_d = float(o["price"])
-                                        elif o["name"] == "Away":
-                                            odds_a = float(o["price"])
-            else:
-                st.sidebar.error("No upcoming matches found or invalid token.")
-        except Exception as api_err:
-            st.sidebar.error(f"API Fetch Failure: {api_err}")
+                                        if o["name"] == "Home": odds_h = float(o["price"])
+                                        elif o["name"] == "Draw": odds_d = float(o["price"])
+                                        elif o["name"] == "Away": odds_a = float(o["price"])
+        except Exception as e:
+            st.sidebar.error(f"API Error: {e}")
 
 st.sidebar.header("📊 2. Match Settings Override")
 if not api_key:
@@ -134,7 +113,7 @@ dc_rho = st.sidebar.slider("Dixon-Coles Adjustment Factor", -0.15, 0.15, -0.05, 
 max_goals = st.sidebar.slider("Maximum scoreline cap", 6, 15, 10)
 
 st.sidebar.header("📷 3. Visual Lineup Input")
-lineup_source = st.sidebar.radio("Lineup Capture Method", ["Disable Visual Parsing", "Smartphone Camera Feed", "Upload Infographic File"])
+lineup_source = st.sidebar.radio("Lineup Method", ["Disable Visual Parsing", "Smartphone Camera Feed", "Upload Infographic File"])
 
 img_buffer = None
 if lineup_source == "Smartphone Camera Feed":
@@ -144,7 +123,7 @@ elif lineup_source == "Upload Infographic File":
 
 parsed_text_list = []
 if img_buffer is not None:
-    with st.spinner("Processing image pixels through Computer Vision Engine..."):
+    with st.spinner("Processing image pixels..."):
         try:
             file_bytes = np.asarray(bytearray(img_buffer.read()), dtype=np.uint8)
             opencv_img = cv2.imdecode(file_bytes, 1)
@@ -164,7 +143,6 @@ odds_a = st.sidebar.number_input("Away Win Odds", min_value=1.01, value=odds_a)
 
 # --- MAIN UI LAYOUT ---
 st.header("🎛️ Environmental & Situational Modifiers")
-
 expl, exp2, exp3 = st.columns(3)
 with expl:
     weather_factor = st.selectbox("Weather Variance", ["Perfect / Dry (1.00x)", "Heavy Rain / Wet Pitch (0.92x xG)", "Extreme Cold / Snow (0.85x xG)"])
@@ -173,7 +151,7 @@ with exp2:
     motivation_h = st.slider("Home Motivation Boost", 0.80, 1.20, 1.00, 0.05)
     motivation_a = st.slider("Away Motivation Boost", 0.80, 1.20, 1.00, 0.05)
 with exp3:
-    ref_factor = st.selectbox("Referee Tendency", ["Standard / Balanced (1.00x)", "Strict / Card-Happy (Increases Penalty/Red Risk)", "Lenient / Fluid Play (0.98x xG Drop)"])
+    ref_factor = st.selectbox("Referee Tendency", ["Standard / Balanced (1.00x)", "Strict / Card-Happy", "Lenient / Fluid Play"])
     stadium_cap = st.slider("Stadium Congestion Crowding Impact", 80, 120, 100, 5)
 
 weather_multiplier = 1.0 if "Perfect" in weather_factor else (0.92 if "Heavy Rain" in weather_factor else 0.85)
@@ -183,16 +161,12 @@ stadium_multiplier = stadium_cap / 100.0
 # --- SQUAD REGISTER DATABASE ---
 roster_db = {
     "aston villa": [
-        {"name": "Watkins", "pos": "FW", "weight": 0.25, "reason": "Responsible for 31% of team open-play transitions"},
-        {"name": "Martinez", "pos": "GK", "weight": 0.15, "reason": "Primary shot-stopping variance anchor"}
+        {"name": "Watkins", "pos": "FW", "weight": 0.25, "reason": "31% open-play transitions missing"},
+        {"name": "Martinez", "pos": "GK", "weight": 0.15, "reason": "Shot-stopping anchor missing"}
     ],
     "manchester city": [
-        {"name": "Haaland", "pos": "FW", "weight": 0.35, "reason": "Core box target responsible for 42% of conversion metrics"},
-        {"name": "De Bruyne", "pos": "MF", "weight": 0.20, "reason": "Main creativity engine supplying offensive production"}
-    ],
-    "arsenal": [
-        {"name": "Saka", "pos": "FW", "weight": 0.20, "reason": "Primary creative driver and direct box entry point"},
-        {"name": "Odegaard", "pos": "MF", "weight": 0.15, "reason": "Central transition link and defensive pressing director"}
+        {"name": "Haaland", "pos": "FW", "weight": 0.35, "reason": "42% box conversions missing"},
+        {"name": "De Bruyne", "pos": "MF", "weight": 0.20, "reason": "Main creativity engine missing"}
     ]
 }
 
@@ -202,12 +176,38 @@ lineup_penalty_multiplier_a = 1.0
 
 if parsed_text_list:
     text_blob_lower = " ".join(parsed_text_list).lower()
-    
     home_key = home_team.strip().lower()
     if home_key in roster_db:
         for player in roster_db[home_key]:
             if player["name"].lower() not in text_blob_lower:
                 lineup_penalty_multiplier_h -= player["weight"]
-                xG_downgrade_reasons.append(
-                    f"⚠️ **{home_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
-                    f"Baseline dropped by -{player['weight']*100:.0f}%. Reason: {player['reason']}."
+                msg = f"⚠️ {home_team}: {player['name']} absent. -{player['weight']*100:.0f}% xG. {player['reason']}"
+                xG_downgrade_reasons.append(msg)
+                
+    away_key = away_team.strip().lower()
+    if away_key in roster_db:
+        for player in roster_db[away_key]:
+            if player["name"].lower() not in text_blob_lower:
+                lineup_penalty_multiplier_a -= player["weight"]
+                msg = f"⚠️ {away_team}: {player['name']} absent. -{player['weight']*100:.0f}% xG. {player['reason']}"
+                xG_downgrade_reasons.append(msg)
+
+lineup_penalty_multiplier_h = max(0.15, lineup_penalty_multiplier_h)
+lineup_penalty_multiplier_a = max(0.15, lineup_penalty_multiplier_a)
+
+st.subheader("Base expected-goals variables")
+c1, c2 = st.columns(2)
+base_hxg = c1.number_input(f"Base {home_team} xG", min_value=0.15, max_value=4.50, value=base_hxg, step=0.05)
+base_axg = c2.number_input(f"Base {away_team} xG", min_value=0.15, max_value=4.50, value=base_axg, step=0.05)
+
+hxg = base_hxg * motivation_h * pitch_multiplier * stadium_multiplier * lineup_penalty_multiplier_h
+axg = base_axg * motivation_a * weather_multiplier * pitch_multiplier * lineup_penalty_multiplier_a
+
+if xG_downgrade_reasons:
+    st.info("### 🔍 Live Lineup Disruption Logs")
+    for log_message in xG_downgrade_reasons:
+        st.markdown(log_message)
+
+if home_team.strip() and away_team.strip() and home_team.strip().casefold() != away_team.strip().casefold():
+    result = calculate(float(hxg), float(axg), max_goals, dc_rho)
+    
