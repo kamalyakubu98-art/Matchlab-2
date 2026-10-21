@@ -55,7 +55,7 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     home_score = sum(p for (h,a),p in scores.items() if h > 0)
     away_score = sum(p for (h,a),p in scores.items() if a > 0)
     
-    # SUCCESSFUL FIXED LINE: Sort strictly by item value index [1] (Probability)
+    # FIXED MATRIX SORT LINE
     top = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:10]
 
     return {
@@ -120,13 +120,11 @@ with exp3:
     ref_factor = st.selectbox("Referee Tendency", ["Standard / Balanced (1.00x)", "Strict / Card-Happy (Increases Penalty/Red Risk)", "Lenient / Fluid Play (0.98x xG Drop)"])
     stadium_cap = st.slider("Stadium Congestion Crowding Impact", 80, 120, 100, 5)
 
-# Factor mapping conversions
 weather_multiplier = 1.0 if "Perfect" in weather_factor else (0.92 if "Heavy Rain" in weather_factor else 0.85)
 pitch_multiplier = 1.0 if "Immaculate" in pitch_factor else (0.95 if "Slow" in pitch_factor else 1.04)
 stadium_multiplier = stadium_cap / 100.0
 
-# --- EXPLAINABLE AI SQUAD ROSTER DATA MODULE ---
-# Mocking core API-Sports player roster database mapping
+# --- SQUAD REGISTER DATABASE ---
 roster_db = {
     "aston villa": [
         {"name": "Watkins", "pos": "FW", "weight": 0.25, "reason": "Responsible for 31% of team open-play transitions"},
@@ -135,6 +133,10 @@ roster_db = {
     "manchester city": [
         {"name": "Haaland", "pos": "FW", "weight": 0.35, "reason": "Core box target responsible for 42% of conversion metrics"},
         {"name": "De Bruyne", "pos": "MF", "weight": 0.20, "reason": "Main creativity engine (average 4.2 shot-creating actions)"}
+    ],
+    "arsenal": [
+        {"name": "Saka", "pos": "FW", "weight": 0.20, "reason": "Primary creative driver and direct box entry point"},
+        {"name": "Odegaard", "pos": "MF", "weight": 0.15, "reason": "Central transition link and defensive pressing director"}
     ]
 }
 
@@ -145,31 +147,28 @@ lineup_penalty_multiplier_a = 1.0
 if parsed_text_list:
     text_blob_lower = " ".join(parsed_text_list).lower()
     
-    # Process Home Roster Adjustments
     home_key = home_team.strip().lower()
     if home_key in roster_db:
         for player in roster_db[home_key]:
             if player["name"].lower() not in text_blob_lower:
                 lineup_penalty_multiplier_h -= player["weight"]
                 xG_downgrade_reasons.append(
-                    f"⚠️ **{home_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup feed. "
-                    f"Baseline lowered by -{player['weight']*100:.0f}% because he is: {player['reason']}."
+                    f"⚠️ **{home_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
+                    f"Baseline dropped by -{player['weight']*100:.0f}%. Context: {player['reason']}."
                 )
                 
-    # Process Away Roster Adjustments
     away_key = away_team.strip().lower()
     if away_key in roster_db:
         for player in roster_db[away_key]:
             if player["name"].lower() not in text_blob_lower:
                 lineup_penalty_multiplier_a -= player["weight"]
                 xG_downgrade_reasons.append(
-                    f"⚠️ **{away_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup feed. "
-                    f"Baseline lowered by -{player['weight']*100:.0f}% because he is: {player['reason']}."
+                    f"⚠️ **{away_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
+                    f"Baseline dropped by -{player['weight']*100:.0f}%. Context: {player['reason']}."
                 )
 
-# Safeguard weights from falling below absolute zero
-lineup_penalty_multiplier_h = max(0.1, lineup_penalty_multiplier_h)
-lineup_penalty_multiplier_a = max(0.1, lineup_penalty_multiplier_a)
+lineup_penalty_multiplier_h = max(0.15, lineup_penalty_multiplier_h)
+lineup_penalty_multiplier_a = max(0.15, lineup_penalty_multiplier_a)
 
 if mode == "Enter expected goals manually":
     st.subheader("Base expected-goals variables")
@@ -184,7 +183,6 @@ else:
     hxg = 1.50
     axg = 1.10
 
-# Print Explainable AI Log Messages
 if xG_downgrade_reasons:
     st.info("### 🔍 Live Lineup Disruption Logs")
     for log_message in xG_downgrade_reasons:
@@ -213,4 +211,4 @@ if hxg is not None and axg is not None and home_team.strip() and away_team.strip
         if (result['draw'] - market_d) > 0.02:
             st.success(f"📈 Edge: +{((result['draw'] - market_d)*100):.1f}%")
     with m3:
-    
+        st.metric(f"{away_team} Win", f"{result['away_win']*100:.1f}%")
