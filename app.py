@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 import cv2
 import numpy as np
+import requests
 
 # Lazy load EasyOCR only when an image is processed to conserve mobile runtime memory
 @st.cache_resource
@@ -13,7 +14,7 @@ def get_ocr_reader():
 
 st.set_page_config(page_title="MatchLab Pro v3.5", page_icon="⚽", layout="wide")
 st.title("⚽ MatchLab 3.5 Pro (Context Intelligence)")
-st.caption("Advanced football probability platform · Visual Lineups · Environmental & Situational Modifiers")
+st.caption("Advanced football probability platform · Live API Automation · Explanatory Context Logic")
 
 st.warning(
     "Prototype notice: Context adjustments modify base statistical baselines. "
@@ -65,18 +66,67 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
         "top": [(f"{h}-{a}", p) for (h,a), p in top]
     }
 
-# --- SIDEBAR: Core Settings ---
-st.sidebar.header("1. Core Match Setup")
-home_team = st.sidebar.text_input("Home team", "Aston Villa")
-away_team = st.sidebar.text_input("Away team", "Manchester City")
-mode = st.sidebar.radio("Expected goals source:", ["Enter expected goals manually", "Historical CSV"])
+# --- SIDEBAR: Live Data Automation Framework ---
+st.sidebar.header("🔑 1. API-Sports Connection")
+api_key = st.sidebar.text_input("Enter API-Sports Key", type="password")
+league_id = st.sidebar.number_input("League ID (EPL = 39)", min_value=1, value=39)
 
-st.sidebar.header("2. Base Settings")
+home_team = "Home Team"
+away_team = "Away Team"
+odds_h, odds_d, odds_a = 2.10, 3.40, 3.20
+base_hxg, base_axg = 1.50, 1.10
+
+# Initialize live request pipelines if token exists
+if api_key:
+    headers = {'x-apisports-key': api_key}
+    
+    # Fetch upcoming fixture cards
+    with st.sidebar.spinner("Fetching live fixture schedule..."):
+        try:
+            url = f"https://api-sports.io{league_id}&next=10"
+            res = requests.get(url, headers=headers).json()
+            
+            if "response" in res and res["response"]:
+                fixture_options = {
+                    f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}": f
+                    for f in res["response"]
+                }
+                selected_match_str = st.sidebar.selectbox("Select Active Live Fixture", list(fixture_options.keys()))
+                
+                if selected_match_str:
+                    match_data = fixture_options[selected_match_str]
+                    fixture_id = match_data["fixture"]["id"]
+                    home_team = match_data["teams"]["home"]["name"]
+                    away_team = match_data["teams"]["away"]["name"]
+                    
+                    # Call API Odds data layer for selected fixture match ID
+                    odds_url = f"https://api-sports.io{fixture_id}"
+                    odds_res = requests.get(odds_url, headers=headers).json()
+                    
+                    if "response" in odds_res and odds_res["response"]:
+                        bookmakers = odds_res["response"][0].get("bookmakers", [])
+                        if bookmakers:
+                            markets = bookmakers[0].get("markets", [])
+                            for m in markets:
+                                if m["value"] == "Match Winner":
+                                    for o in m["outcomes"]:
+                                        if o["value"] == "Home": odds_h = float(o["odd"])
+                                        elif o["value"] == "Draw": odds_d = float(o["odd"])
+                                        elif o["value"] == "Away": odds_a = float(o["odd"])
+            else:
+                st.sidebar.error("Invalid API Key or No Fixtures Found.")
+        except Exception as api_err:
+            st.sidebar.error(f"API Fetch Failure: {api_err}")
+
+st.sidebar.header("📊 2. Match Settings Override")
+if not api_key:
+    home_team = st.sidebar.text_input("Home team", "Aston Villa")
+    away_team = st.sidebar.text_input("Away team", "Manchester City")
+
 dc_rho = st.sidebar.slider("Dixon-Coles Adjustment Factor", -0.15, 0.15, -0.05, step=0.01)
 max_goals = st.sidebar.slider("Maximum scoreline cap", 6, 15, 10)
 
-st.sidebar.header("3. Visual Lineup Input")
-st.sidebar.caption("Capture or upload squad charts to parse key player impacts.")
+st.sidebar.header("📷 3. Visual Lineup Input")
 lineup_source = st.sidebar.radio("Lineup Capture Method", ["Disable Visual Parsing", "Smartphone Camera Feed", "Upload Infographic File"])
 
 img_buffer = None
@@ -100,14 +150,13 @@ if img_buffer is not None:
         except Exception as cv_error:
             st.error(f"Vision engine error: {cv_error}")
 
-st.sidebar.header("4. Market Context")
-odds_h = st.sidebar.number_input("Home Win Odds", min_value=1.01, value=2.10)
-odds_d = st.sidebar.number_input("Draw Odds", min_value=1.01, value=3.40)
-odds_a = st.sidebar.number_input("Away Win Odds", min_value=1.01, value=3.20)
+st.sidebar.header("📈 4. Market Context Lines")
+odds_h = st.sidebar.number_input("Home Win Odds", min_value=1.01, value=odds_h)
+odds_d = st.sidebar.number_input("Draw Odds", min_value=1.01, value=odds_d)
+odds_a = st.sidebar.number_input("Away Win Odds", min_value=1.01, value=odds_a)
 
 # --- MAIN UI LAYOUT ---
 st.header("🎛️ Environmental & Situational Modifiers")
-st.caption("Apply contextual adjustments based on team context parameters.")
 
 expl, exp2, exp3 = st.columns(3)
 with expl:
@@ -128,11 +177,11 @@ stadium_multiplier = stadium_cap / 100.0
 roster_db = {
     "aston villa": [
         {"name": "Watkins", "pos": "FW", "weight": 0.25, "reason": "Responsible for 31% of team open-play transitions"},
-        {"name": "Martinez", "pos": "GK", "weight": 0.15, "reason": "Primary shot-stopping variance anchor (+0.44 prevented goals)"}
+        {"name": "Martinez", "pos": "GK", "weight": 0.15, "reason": "Primary shot-stopping variance anchor"}
     ],
     "manchester city": [
         {"name": "Haaland", "pos": "FW", "weight": 0.35, "reason": "Core box target responsible for 42% of conversion metrics"},
-        {"name": "De Bruyne", "pos": "MF", "weight": 0.20, "reason": "Main creativity engine (average 4.2 shot-creating actions)"}
+        {"name": "De Bruyne", "pos": "MF", "weight": 0.20, "reason": "Main creativity engine supplying offensive production"}
     ],
     "arsenal": [
         {"name": "Saka", "pos": "FW", "weight": 0.20, "reason": "Primary creative driver and direct box entry point"},
@@ -154,7 +203,7 @@ if parsed_text_list:
                 lineup_penalty_multiplier_h -= player["weight"]
                 xG_downgrade_reasons.append(
                     f"⚠️ **{home_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
-                    f"Baseline dropped by -{player['weight']*100:.0f}%. Context: {player['reason']}."
+                    f"Baseline dropped by -{player['weight']*100:.0f}%. Reason: {player['reason']}."
                 )
                 
     away_key = away_team.strip().lower()
@@ -163,52 +212,4 @@ if parsed_text_list:
             if player["name"].lower() not in text_blob_lower:
                 lineup_penalty_multiplier_a -= player["weight"]
                 xG_downgrade_reasons.append(
-                    f"⚠️ **{away_team} Downside:** {player['name']} ({player['pos']}) missing from analyzed lineup. "
-                    f"Baseline dropped by -{player['weight']*100:.0f}%. Context: {player['reason']}."
-                )
-
-lineup_penalty_multiplier_h = max(0.15, lineup_penalty_multiplier_h)
-lineup_penalty_multiplier_a = max(0.15, lineup_penalty_multiplier_a)
-
-if mode == "Enter expected goals manually":
-    st.subheader("Base expected-goals variables")
-    c1, c2 = st.columns(2)
-    base_hxg = c1.number_input(f"Base {home_team} xG", min_value=0.15, max_value=4.50, value=1.55, step=0.05)
-    base_axg = c2.number_input(f"Base {away_team} xG", min_value=0.15, max_value=4.50, value=1.10, step=0.05)
-
-    hxg = base_hxg * motivation_h * pitch_multiplier * stadium_multiplier * lineup_penalty_multiplier_h
-    axg = base_axg * motivation_a * weather_multiplier * pitch_multiplier * lineup_penalty_multiplier_a
-else:
-    st.info("Historical data computation matrix active.")
-    hxg = 1.50
-    axg = 1.10
-
-if xG_downgrade_reasons:
-    st.info("### 🔍 Live Lineup Disruption Logs")
-    for log_message in xG_downgrade_reasons:
-        st.markdown(log_message)
-
-if hxg is not None and axg is not None and home_team.strip() and away_team.strip() and home_team.strip().casefold() != away_team.strip().casefold():
-    result = calculate(float(hxg), float(axg), max_goals, dc_rho)
-    st.divider()
-
-    raw_implied_sum = (1/odds_h) + (1/odds_d) + (1/odds_a)
-    bookie_margin = raw_implied_sum - 1.0
-    market_h = (1/odds_h) / raw_implied_sum
-    market_d = (1/odds_d) / raw_implied_sum
-    market_a = (1/odds_a) / raw_implied_sum
-
-    st.subheader(f"{home_team} vs {away_team}")
-    st.caption(f"Final Model Adjusted xG: {home_team} (hxg): {hxg:.2f} | {away_team} (axg): {axg:.2f}")
-
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric(f"{home_team} Win", f"{result['home_win']*100:.1f}%")
-        if (result['home_win'] - market_h) > 0.02:
-            st.success(f"📈 Edge: +{((result['home_win'] - market_h)*100):.1f}%")
-    with m2:
-        st.metric("Draw", f"{result['draw']*100:.1f}%")
-        if (result['draw'] - market_d) > 0.02:
-            st.success(f"📈 Edge: +{((result['draw'] - market_d)*100):.1f}%")
-    with m3:
-        st.metric(f"{away_team} Win", f"{result['away_win']*100:.1f}%")
+    
