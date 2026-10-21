@@ -201,9 +201,9 @@ if parsed_text_list:
 raw_vector = np.array([[clean_weather, clean_pitch, fatigue_val, clean_strictness, clean_motivation, squad_integrity_coef]], dtype=float)
 live_input_scaled = scaler.transform(raw_vector)
 
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled))
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled))
+# FIXED: Sliced index arrays explicitly capturing the leading array float component elements [0] to stop datatype crashes
+ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
+ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 # Flat Team Metrics Lookups
 match_h_metrics = league_df[league_df["Team"] == home_clean]
-att_h = float(match_h_metrics["Attack_Rating"].values[0]) if not match_h_metrics.empty else 1.75
