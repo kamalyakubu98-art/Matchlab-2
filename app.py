@@ -354,4 +354,5 @@ if run:
     best_outcome = max([(home_display, exact["home_win"]), ("Draw", exact["draw"]), (away_display, exact["away_win"])], key=lambda x: x[1])
     best_score, best_score_p = exact["top_scores"][0]
     st.subheader("Model summary")
-    st.success(f"Most probable 1X2 outcome: {best_outcome[0]} ({best_outcome[1] * 100:.1f}%). This is the most likely of the three outcomes, not
+    outcome_message = f"Most probable 1X2 outcome: {best_outcome[0]} ({best_outcome[1] * 100:.1f}%)."
+    st.success(outcome_message + " This is
