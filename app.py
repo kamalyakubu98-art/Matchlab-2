@@ -1,1203 +1,637 @@
-import io
 import json
 import math
+import os
 import random
-from collections import Counter, defaultdict
+import sqlite3
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from collections import Counter
 
 import pandas as pd
+import requests
 import streamlit as st
 
-
 # ============================================================
-# MATCHLAB PRO V2
-# Context-aware football probability + simulation workspace
+# MATCHLAB Pro V3
+# Fixture-first, data-driven football prediction engine
 # ============================================================
 
 st.set_page_config(
-    page_title="MATCHLAB Pro",
+    page_title="MATCHLAB Pro V3",
     page_icon="⚽",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
+DB_PATH = Path("matchlab_history.db")
+API_FOOTBALL_BASE = "https://v3.football.api-sports.io"
 
-# ============================================================
-# STYLE
-# ============================================================
+# ------------------------------------------------------------
+# Styling
+# ------------------------------------------------------------
 
 st.markdown(
     """
     <style>
-        .main-title {
-            font-size: 3rem;
-            font-weight: 900;
-            letter-spacing: -2px;
-            margin-bottom: 0;
-        }
-
-        .subtitle {
-            color: #777;
-            font-size: 1.05rem;
-            margin-top: -5px;
-            margin-bottom: 25px;
-        }
-
-        .welcome {
-            padding: 22px;
-            border-radius: 14px;
-            background: linear-gradient(
-                135deg,
-                rgba(30, 100, 220, 0.10),
-                rgba(30, 180, 120, 0.08)
-            );
-            border: 1px solid rgba(100, 100, 100, 0.15);
-            margin-bottom: 20px;
-        }
-
-        .metric-value {
-            font-size: 2rem;
-            font-weight: 800;
-        }
-
-        .small-note {
-            color: #777;
-            font-size: 0.82rem;
-        }
-
-        .section-card {
-            padding: 18px;
-            border-radius: 12px;
-            border: 1px solid rgba(100, 100, 100, 0.15);
-            margin-bottom: 15px;
-        }
+    .title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 0;
+    }
+    .subtitle {
+        color: #8f9aaa;
+        margin-bottom: 18px;
+    }
+    .welcome {
+        padding: 18px;
+        border-radius: 14px;
+        background: rgba(80, 100, 130, 0.12);
+        border: 1px solid rgba(130, 150, 180, 0.20);
+        margin-bottom: 20px;
+    }
+    .reason {
+        padding: 14px;
+        border-radius: 12px;
+        margin-bottom: 10px;
+        background: rgba(80, 100, 130, 0.08);
+        border: 1px solid rgba(130, 150, 180, 0.14);
+    }
+    .value-box {
+        padding: 16px;
+        border-radius: 14px;
+        background: rgba(30, 140, 80, 0.10);
+        border: 1px solid rgba(30, 160, 90, 0.25);
+    }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
 # ============================================================
-# BUILT-IN TEAM PRIORS
-# These are fallback/illustrative ratings.
+# SETTINGS / SECRETS
 # ============================================================
 
-TEAM_DATA = {
-    "aston villa": {
-        "attack": 1.65,
-        "defense": 1.20,
-        "home_adv": 0.25,
-    },
-    "manchester city": {
-        "attack": 2.30,
-        "defense": 0.90,
-        "home_adv": 0.30,
-    },
-    "arsenal": {
-        "attack": 2.10,
-        "defense": 0.85,
-        "home_adv": 0.22,
-    },
-    "liverpool": {
-        "attack": 2.25,
-        "defense": 0.95,
-        "home_adv": 0.35,
-    },
-    "chelsea": {
-        "attack": 1.80,
-        "defense": 1.35,
-        "home_adv": 0.15,
-    },
-    "manchester united": {
-        "attack": 1.45,
-        "defense": 1.40,
-        "home_adv": 0.10,
-    },
-    "real madrid": {
-        "attack": 2.40,
-        "defense": 0.88,
-        "home_adv": 0.32,
-    },
-    "barcelona": {
-        "attack": 2.05,
-        "defense": 1.05,
-        "home_adv": 0.28,
-    },
-    "bayern munich": {
-        "attack": 2.35,
-        "defense": 1.10,
-        "home_adv": 0.30,
-    },
-    "inter milan": {
-        "attack": 1.95,
-        "defense": 0.80,
-        "home_adv": 0.25,
-    },
-    "juventus": {
-        "attack": 1.60,
-        "defense": 0.90,
-        "home_adv": 0.18,
-    },
-    "psg": {
-        "attack": 2.15,
-        "defense": 1.15,
-        "home_adv": 0.20,
-    },
-}
+def get_secret(name):
+    try:
+        value = st.secrets.get(name, "")
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.getenv(name, "")
 
 
-ALIASES = {
-    "man city": "manchester city",
-    "mancity": "manchester city",
-    "manchester utd": "manchester united",
-    "man utd": "manchester united",
-    "man united": "manchester united",
-    "real": "real madrid",
-    "real madrid cf": "real madrid",
-    "barca": "barcelona",
-    "fc barcelona": "barcelona",
-    "bayern": "bayern munich",
-    "fc bayern": "bayern munich",
-    "inter": "inter milan",
-    "internazionale": "inter milan",
-    "paris saint-germain": "psg",
-    "paris sg": "psg",
-}
-
-
-FORMATIONS = [
-    "4-3-3",
-    "4-2-3-1",
-    "4-4-2",
-    "3-4-3",
-    "3-5-2",
-    "5-3-2",
-    "4-1-4-1",
-    "5-4-1",
-    "Not specified",
-]
-
-
-COMPETITIONS = [
-    "Premier League",
-    "UEFA Champions League",
-    "UEFA Europa League",
-    "La Liga",
-    "Bundesliga",
-    "Serie A",
-    "Ligue 1",
-    "Domestic Cup",
-    "International",
-    "Friendly",
-    "Other",
-]
-
-
-MATCH_STAGES = [
-    "League / regular match",
-    "Group stage",
-    "Knockout — first leg",
-    "Knockout — second leg",
-    "Final",
-    "Friendly",
-]
-
-
-VENUES = [
-    "Home team venue",
-    "Away team venue",
-    "Neutral venue",
-    "Not sure",
-]
-
-
-ABSENCE_TYPES = [
-    "Not specified",
-    "Attackers",
-    "Midfielders",
-    "Defenders",
-    "Goalkeeper",
-    "Mixed",
-]
-
-
-MOTIVATIONS = [
-    "Normal",
-    "Low",
-    "High",
-    "Very high",
-]
-
+API_FOOTBALL_KEY = get_secret("API_FOOTBALL_KEY")
+TAVILY_API_KEY = get_secret("TAVILY_API_KEY")
+SERPER_API_KEY = get_secret("SERPER_API_KEY")
 
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
-
-def norm(name):
-    """Normalize team names and apply aliases."""
-    if name is None:
-        return ""
-
-    value = str(name).strip().lower()
-    value = " ".join(value.split())
-
-    return ALIASES.get(value, value)
-
 
 def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def poisson_pmf(k, lam):
-    """Poisson probability."""
-    lam = max(0.0001, float(lam))
-
-    if k < 0:
-        return 0.0
-
-    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+def norm(value):
+    return " ".join(str(value or "").strip().lower().split())
 
 
-def weighted_mean(values, weights):
-    total_weight = sum(weights)
+def pct(value):
+    return f"{value * 100:.1f}%"
 
-    if total_weight <= 0:
-        return float(sum(values) / max(1, len(values)))
 
-    return sum(v * w for v, w in zip(values, weights)) / total_weight
+def fair_odds(probability):
+    if probability <= 0:
+        return None
+    return 1.0 / probability
 
+
+def implied_probability(decimal_odds):
+    if decimal_odds is None or decimal_odds <= 1:
+        return None
+    return 1.0 / decimal_odds
+
+
+def safe_float(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def parse_date(value):
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 # ============================================================
-# FORM PARSER
+# SQLITE HISTORY
 # ============================================================
 
-def parse_form(text):
-    """
-    Accepts:
-        2-1, 1-1, 3-0
-    or:
-        2-1; 1-1; 3-0
-    """
-    if not text or not text.strip():
-        return []
-
-    entries = []
-
-    chunks = text.replace(";", ",").split(",")
-
-    for chunk in chunks:
-        chunk = chunk.strip()
-
-        if not chunk:
-            continue
-
-        if "-" not in chunk:
-            raise ValueError(
-                f"Invalid form entry '{chunk}'. Use format GF-GA, e.g. 2-1."
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS predictions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                fixture_id INTEGER,
+                match_date TEXT,
+                competition TEXT,
+                home_team TEXT NOT NULL,
+                away_team TEXT NOT NULL,
+                home_probability REAL,
+                draw_probability REAL,
+                away_probability REAL,
+                home_xg REAL,
+                away_xg REAL,
+                predicted_outcome TEXT,
+                predicted_score TEXT,
+                confidence_score REAL,
+                model_source TEXT,
+                actual_home_goals INTEGER,
+                actual_away_goals INTEGER,
+                result_checked INTEGER DEFAULT 0,
+                value_summary TEXT,
+                reasons_json TEXT,
+                raw_json TEXT
             )
-
-        left, right = chunk.split("-", 1)
-
-        try:
-            gf = int(left.strip())
-            ga = int(right.strip())
-        except ValueError:
-            raise ValueError(
-                f"Invalid form entry '{chunk}'. Use numbers such as 2-1."
-            )
-
-        if not (0 <= gf <= 20 and 0 <= ga <= 20):
-            raise ValueError(
-                f"Goals in '{chunk}' must be between 0 and 20."
-            )
-
-        entries.append((gf, ga))
-
-    return entries[-10:]
+            """
+        )
+        conn.commit()
 
 
-def form_adjustment(entries, baseline_goals=1.35):
-    """
-    Returns:
-        attack_multiplier
-        defense_multiplier
-        summary
+init_db()
 
-    Defense multiplier:
-        < 1 = better defensive form
-        > 1 = worse defensive form
-    """
 
-    if not entries:
-        return 1.0, 1.0, None
+def save_prediction(record):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO predictions (
+                created_at, fixture_id, match_date, competition,
+                home_team, away_team,
+                home_probability, draw_probability, away_probability,
+                home_xg, away_xg,
+                predicted_outcome, predicted_score,
+                confidence_score, model_source,
+                value_summary, reasons_json, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                record.get("fixture_id"),
+                record.get("match_date"),
+                record.get("competition"),
+                record["home_team"],
+                record["away_team"],
+                record["home_probability"],
+                record["draw_probability"],
+                record["away_probability"],
+                record["home_xg"],
+                record["away_xg"],
+                record["predicted_outcome"],
+                record["predicted_score"],
+                record.get("confidence_score"),
+                record.get("model_source"),
+                record.get("value_summary", ""),
+                json.dumps(record.get("reasons", [])),
+                json.dumps(record, default=str),
+            ),
+        )
+        conn.commit()
 
-    n = len(entries)
 
-    # Most recent match receives the largest weight.
-    weights = [
-        0.72 ** (n - 1 - i)
-        for i in range(n)
+def load_history(limit=100):
+    with sqlite3.connect(DB_PATH) as conn:
+        return pd.read_sql_query(
+            """
+            SELECT id, created_at, fixture_id, match_date,
+                   competition, home_team, away_team,
+                   home_probability, draw_probability,
+                   away_probability, home_xg, away_xg,
+                   predicted_outcome, predicted_score,
+                   confidence_score, model_source,
+                   actual_home_goals, actual_away_goals,
+                   result_checked, value_summary
+            FROM predictions
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            conn,
+            params=(limit,),
+        )
+
+
+def delete_prediction(prediction_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM predictions WHERE id = ?",
+            (int(prediction_id),),
+        )
+        conn.commit()
+
+
+def update_actual_result(prediction_id, home_goals, away_goals):
+    actual_result = (
+        "Home"
+        if home_goals > away_goals
+        else "Draw"
+        if home_goals == away_goals
+        else "Away"
+    )
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            UPDATE predictions
+            SET actual_home_goals = ?,
+                actual_away_goals = ?,
+                result_checked = 1
+            WHERE id = ?
+            """,
+            (home_goals, away_goals, int(prediction_id)),
+        )
+        conn.commit()
+
+# ============================================================
+# API-FOOTBALL CLIENT
+# ============================================================
+
+class APIFootball:
+    def __init__(self, api_key):
+        self.api_key = api_key
+
+    def enabled(self):
+        return bool(self.api_key)
+
+    def get(self, endpoint, params=None, timeout=20):
+        if not self.enabled():
+            raise RuntimeError("API_FOOTBALL_KEY is not configured.")
+
+        response = requests.get(
+            API_FOOTBALL_BASE + endpoint,
+            headers={
+                "x-apisports-key": self.api_key,
+                "Accept": "application/json",
+            },
+            params=params or {},
+            timeout=timeout,
+        )
+
+        response.raise_for_status()
+        payload = response.json()
+
+        if payload.get("errors"):
+            raise RuntimeError(str(payload["errors"]))
+
+        return payload
+
+    def search_team(self, name):
+        data = self.get("/teams", {"search": name})
+        return data.get("response", [])
+
+    def team_fixtures(self, team_id, last=None, next_count=None):
+        params = {"team": team_id}
+        if last is not None:
+            params["last"] = last
+        if next_count is not None:
+            params["next"] = next_count
+        data = self.get("/fixtures", params)
+        return data.get("response", [])
+
+    def fixture_by_id(self, fixture_id):
+        data = self.get("/fixtures", {"id": fixture_id})
+        response = data.get("response", [])
+        return response[0] if response else None
+
+    def head_to_head(self, home_id, away_id, last=10):
+        data = self.get(
+            "/fixtures/headtohead",
+            {"h2h": f"{home_id}-{away_id}", "last": last},
+        )
+        return data.get("response", [])
+
+    def injuries(self, fixture_id=None, team_id=None):
+        params = {}
+        if fixture_id:
+            params["fixture"] = fixture_id
+        elif team_id:
+            params["team"] = team_id
+        data = self.get("/injuries", params)
+        return data.get("response", [])
+
+    def lineups(self, fixture_id):
+        data = self.get("/fixtures/lineups", {"fixture": fixture_id})
+        return data.get("response", [])
+
+    def odds(self, fixture_id):
+        data = self.get("/odds", {"fixture": fixture_id})
+        return data.get("response", [])
+
+    def standings(self, league_id, season):
+        data = self.get(
+            "/standings",
+            {"league": league_id, "season": season},
+        )
+        return data.get("response", [])
+
+api = APIFootball(API_FOOTBALL_KEY)
+
+# ============================================================
+# OPTIONAL GENERAL WEB RESEARCH
+# ============================================================
+
+def web_search(query, max_results=5):
+    """Use Tavily first, then Serper if configured."""
+
+    if TAVILY_API_KEY:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": max_results,
+                "include_answer": True,
+            },
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return {
+            "provider": "Tavily",
+            "answer": payload.get("answer", ""),
+            "results": payload.get("results", []),
+        }
+
+    if SERPER_API_KEY:
+        response = requests.post(
+            "https://google.serper.dev/search",
+            headers={
+                "X-API-KEY": SERPER_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={"q": query, "num": max_results},
+            timeout=25,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        results = payload.get("organic", [])
+        return {
+            "provider": "Serper",
+            "answer": "",
+            "results": results,
+        }
+
+    return None
+
+# ============================================================
+# TEAM / FIXTURE IDENTIFICATION
+# ============================================================
+
+def choose_team(candidates, requested):
+    if not candidates:
+        return None
+
+    requested_norm = norm(requested)
+
+    exact = [
+        item for item in candidates
+        if norm(item.get("team", {}).get("name")) == requested_norm
     ]
 
-    gf_values = [x[0] for x in entries]
-    ga_values = [x[1] for x in entries]
+    if exact:
+        return exact[0]
 
-    points = []
+    return candidates[0]
 
-    for gf, ga in entries:
-        if gf > ga:
-            points.append(3)
-        elif gf == ga:
-            points.append(1)
-        else:
-            points.append(0)
 
-    gf_avg = weighted_mean(gf_values, weights)
-    ga_avg = weighted_mean(ga_values, weights)
-    points_avg = weighted_mean(points, weights)
+def find_fixture(home_name, away_name, match_date):
+    home_candidates = api.search_team(home_name)
+    away_candidates = api.search_team(away_name)
 
-    attack_multiplier = (
-        1
-        + (gf_avg - baseline_goals) * 0.06
-        + (points_avg - 1.35) * 0.02
+    home_match = choose_team(home_candidates, home_name)
+    away_match = choose_team(away_candidates, away_name)
+
+    if not home_match or not away_match:
+        raise RuntimeError(
+            "One or both teams could not be identified by the football data provider."
+        )
+
+    home_team = home_match["team"]
+    away_team = away_match["team"]
+
+    fixtures = api.team_fixtures(
+        home_team["id"],
+        next_count=30,
     )
 
-    defense_multiplier = (
-        1
-        + (ga_avg - baseline_goals) * 0.05
+    wanted = []
+
+    for fixture in fixtures:
+        f_date = fixture.get("fixture", {}).get("date", "")[:10]
+        f_home = fixture.get("teams", {}).get("home", {}).get("id")
+        f_away = fixture.get("teams", {}).get("away", {}).get("id")
+
+        if (
+            f_date == match_date.isoformat()
+            and f_home == home_team["id"]
+            and f_away == away_team["id"]
+        ):
+            wanted.append(fixture)
+
+    if wanted:
+        return wanted[0], home_team, away_team
+
+    # Fallback: inspect the away team's next fixtures too.
+    away_fixtures = api.team_fixtures(
+        away_team["id"],
+        next_count=30,
     )
 
-    attack_multiplier = clamp(
-        attack_multiplier,
-        0.90,
-        1.10,
+    for fixture in away_fixtures:
+        f_date = fixture.get("fixture", {}).get("date", "")[:10]
+        f_home = fixture.get("teams", {}).get("home", {}).get("id")
+        f_away = fixture.get("teams", {}).get("away", {}).get("id")
+
+        if (
+            f_date == match_date.isoformat()
+            and f_home == home_team["id"]
+            and f_away == away_team["id"]
+        ):
+            return fixture, home_team, away_team
+
+    raise RuntimeError(
+        "No exact fixture was found for those teams on the selected date. "
+        "Check the spelling, date, or fixture schedule."
     )
-
-    defense_multiplier = clamp(
-        defense_multiplier,
-        0.92,
-        1.08,
-    )
-
-    summary = {
-        "matches": n,
-        "gf_avg": gf_avg,
-        "ga_avg": ga_avg,
-        "points_avg": points_avg,
-    }
-
-    return attack_multiplier, defense_multiplier, summary
-
 
 # ============================================================
-# HISTORICAL CSV SUPPORT
+# HISTORICAL / RECENT TEAM MODEL
 # ============================================================
 
-def column_key(value):
-    """
-    Turns:
-        Home Team
-        home_team
-        HomeTeam
-
-    into the same comparable key.
-    """
-    return "".join(
-        character
-        for character in str(value).lower()
-        if character.isalnum()
-    )
+def completed_fixture(fixture):
+    status = fixture.get("fixture", {}).get("status", {}).get("short")
+    return status in {"FT", "AET", "PEN"}
 
 
-def find_column(columns, candidates):
-    lookup = {
-        column_key(column): column
-        for column in columns
-    }
+def extract_match_row(fixture, team_id):
+    if not completed_fixture(fixture):
+        return None
 
-    for candidate in candidates:
-        key = column_key(candidate)
+    home = fixture.get("teams", {}).get("home", {})
+    away = fixture.get("teams", {}).get("away", {})
+    goals = fixture.get("goals", {})
 
-        if key in lookup:
-            return lookup[key]
+    hg = goals.get("home")
+    ag = goals.get("away")
+
+    if hg is None or ag is None:
+        return None
+
+    if home.get("id") == team_id:
+        return {
+            "date": fixture.get("fixture", {}).get("date"),
+            "team_id": team_id,
+            "opponent_id": away.get("id"),
+            "venue": "home",
+            "gf": float(hg),
+            "ga": float(ag),
+            "result": "W" if hg > ag else "D" if hg == ag else "L",
+            "competition": fixture.get("league", {}).get("name", ""),
+        }
+
+    if away.get("id") == team_id:
+        return {
+            "date": fixture.get("fixture", {}).get("date"),
+            "team_id": team_id,
+            "opponent_id": home.get("id"),
+            "venue": "away",
+            "gf": float(ag),
+            "ga": float(hg),
+            "result": "W" if ag > hg else "D" if ag == hg else "L",
+            "competition": fixture.get("league", {}).get("name", ""),
+        }
 
     return None
 
 
-def normalize_history_dataframe(df):
-    """
-    Accepts many common football CSV column names.
-
-    Required:
-        home_team
-        away_team
-        home_goals
-        away_goals
-
-    Optional:
-        date
-        home_xg
-        away_xg
-        competition
-    """
-
-    home_team_col = find_column(
-        df.columns,
-        [
-            "home_team",
-            "home",
-            "hometeam",
-            "home_team_name",
-        ],
-    )
-
-    away_team_col = find_column(
-        df.columns,
-        [
-            "away_team",
-            "away",
-            "awayteam",
-            "away_team_name",
-        ],
-    )
-
-    home_goals_col = find_column(
-        df.columns,
-        [
-            "home_goals",
-            "home_score",
-            "fthg",
-            "hg",
-            "homegoals",
-        ],
-    )
-
-    away_goals_col = find_column(
-        df.columns,
-        [
-            "away_goals",
-            "away_score",
-            "ftag",
-            "ag",
-            "awaygoals",
-        ],
-    )
-
-    if not home_team_col:
-        raise ValueError(
-            "Could not find a home-team column."
-        )
-
-    if not away_team_col:
-        raise ValueError(
-            "Could not find an away-team column."
-        )
-
-    if not home_goals_col:
-        raise ValueError(
-            "Could not find a home-goals column."
-        )
-
-    if not away_goals_col:
-        raise ValueError(
-            "Could not find an away-goals column."
-        )
-
-    rename_map = {
-        home_team_col: "home_team",
-        away_team_col: "away_team",
-        home_goals_col: "home_goals",
-        away_goals_col: "away_goals",
-    }
-
-    date_col = find_column(
-        df.columns,
-        [
-            "date",
-            "match_date",
-            "datetime",
-        ],
-    )
-
-    home_xg_col = find_column(
-        df.columns,
-        [
-            "home_xg",
-            "homexg",
-            "home_expected_goals",
-            "hxg",
-        ],
-    )
-
-    away_xg_col = find_column(
-        df.columns,
-        [
-            "away_xg",
-            "awayxg",
-            "away_expected_goals",
-            "axg",
-        ],
-    )
-
-    competition_col = find_column(
-        df.columns,
-        [
-            "competition",
-            "league",
-            "tournament",
-        ],
-    )
-
-    if date_col:
-        rename_map[date_col] = "date"
-
-    if home_xg_col:
-        rename_map[home_xg_col] = "home_xg"
-
-    if away_xg_col:
-        rename_map[away_xg_col] = "away_xg"
-
-    if competition_col:
-        rename_map[competition_col] = "competition"
-
-    data = df.rename(columns=rename_map).copy()
-
-    data["home_team"] = data["home_team"].map(norm)
-    data["away_team"] = data["away_team"].map(norm)
-
-    data["home_goals"] = pd.to_numeric(
-        data["home_goals"],
-        errors="coerce",
-    )
-
-    data["away_goals"] = pd.to_numeric(
-        data["away_goals"],
-        errors="coerce",
-    )
-
-    if "date" in data.columns:
-        data["date"] = pd.to_datetime(
-            data["date"],
-            errors="coerce",
-        )
-
-    if "home_xg" in data.columns:
-        data["home_xg"] = pd.to_numeric(
-            data["home_xg"],
-            errors="coerce",
-        )
-
-    if "away_xg" in data.columns:
-        data["away_xg"] = pd.to_numeric(
-            data["away_xg"],
-            errors="coerce",
-        )
-
-    data = data[
-        data["home_team"].astype(bool)
-        & data["away_team"].astype(bool)
-        & data["home_goals"].notna()
-        & data["away_goals"].notna()
-    ].copy()
-
-    data["home_goals"] = data["home_goals"].clip(0, 20)
-    data["away_goals"] = data["away_goals"].clip(0, 20)
-
-    if "date" in data.columns:
-        data = data.sort_values("date")
-
-    data = data.reset_index(drop=True)
-
-    if len(data) < 10:
-        raise ValueError(
-            "Historical data needs at least 10 valid matches."
-        )
-
-    return data
-
-
-def fit_strength_model(df, half_life_days=120):
-    """
-    Recency-weighted team strength model.
-
-    The model estimates:
-        home attack
-        home defense
-        away attack
-        away defense
-
-    using iterative Poisson residual updates.
-    """
-
-    data = df.copy()
-
-    using_xg = (
-        "home_xg" in data.columns
-        and "away_xg" in data.columns
-        and (
-            data["home_xg"].notna().sum() >= 5
-            and data["away_xg"].notna().sum() >= 5
-        )
-    )
-
-    if using_xg:
-        home_metric = data["home_xg"].fillna(data["home_goals"])
-        away_metric = data["away_xg"].fillna(data["away_goals"])
-    else:
-        home_metric = data["home_goals"]
-        away_metric = data["away_goals"]
-
-    data = data.copy()
-    data["_home_metric"] = home_metric
-    data["_away_metric"] = away_metric
-
-    # --------------------------------------------------------
-    # Recency weights
-    # --------------------------------------------------------
-
-    if "date" in data.columns and data["date"].notna().any():
-        latest_date = data["date"].max()
-
-        days_old = (
-            latest_date - data["date"]
-        ).dt.days.fillna(0).clip(lower=0)
-
-        weights = (
-            2
-            ** (-days_old / float(half_life_days))
-        )
-    else:
-        latest_date = None
-
-        count = len(data)
-
-        weights = pd.Series(
-            [
-                0.97 ** (count - 1 - i)
-                for i in range(count)
-            ],
-            index=data.index,
-        )
-
-    weights = weights.clip(lower=0.02)
-
-    home_average = weighted_mean(
-        data["_home_metric"].tolist(),
-        weights.tolist(),
-    )
-
-    away_average = weighted_mean(
-        data["_away_metric"].tolist(),
-        weights.tolist(),
-    )
-
-    home_average = clamp(home_average, 0.40, 3.50)
-    away_average = clamp(away_average, 0.40, 3.50)
-
-    teams = sorted(
-        set(data["home_team"]).union(
-            set(data["away_team"])
-        )
-    )
-
-    # Initial strengths.
-    home_attack = defaultdict(lambda: 1.0)
-    home_defense = defaultdict(lambda: 1.0)
-    away_attack = defaultdict(lambda: 1.0)
-    away_defense = defaultdict(lambda: 1.0)
-
-    home_counts = Counter(data["home_team"])
-    away_counts = Counter(data["away_team"])
-
-    # --------------------------------------------------------
-    # Iterative residual fitting
-    # --------------------------------------------------------
-
-    for _ in range(9):
-        ha_sum = defaultdict(float)
-        ha_weight = defaultdict(float)
-
-        hd_sum = defaultdict(float)
-        hd_weight = defaultdict(float)
-
-        aa_sum = defaultdict(float)
-        aa_weight = defaultdict(float)
-
-        ad_sum = defaultdict(float)
-        ad_weight = defaultdict(float)
-
-        for idx, row in data.iterrows():
-            h = row["home_team"]
-            a = row["away_team"]
-            weight = float(weights.loc[idx])
-
-            observed_home = max(
-                0.05,
-                float(row["_home_metric"]),
-            )
-
-            observed_away = max(
-                0.05,
-                float(row["_away_metric"]),
-            )
-
-            expected_home = max(
-                0.05,
-                home_average
-                * home_attack[h]
-                * away_defense[a],
-            )
-
-            expected_away = max(
-                0.05,
-                away_average
-                * away_attack[a]
-                * home_defense[h],
-            )
-
-            home_residual = math.log(
-                observed_home / expected_home
-            )
-
-            away_residual = math.log(
-                observed_away / expected_away
-            )
-
-            ha_sum[h] += weight * home_residual
-            ha_weight[h] += weight
-
-            ad_sum[a] += weight * home_residual
-            ad_weight[a] += weight
-
-            aa_sum[a] += weight * away_residual
-            aa_weight[a] += weight
-
-            hd_sum[h] += weight * away_residual
-            hd_weight[h] += weight
-
-        learning_rate = 0.28
-
-        for team in teams:
-            if ha_weight[team] > 0:
-                home_attack[team] *= math.exp(
-                    learning_rate
-                    * ha_sum[team]
-                    / ha_weight[team]
-                )
-
-            if hd_weight[team] > 0:
-                home_defense[team] *= math.exp(
-                    learning_rate
-                    * hd_sum[team]
-                    / hd_weight[team]
-                )
-
-            if aa_weight[team] > 0:
-                away_attack[team] *= math.exp(
-                    learning_rate
-                    * aa_sum[team]
-                    / aa_weight[team]
-                )
-
-            if ad_weight[team] > 0:
-                away_defense[team] *= math.exp(
-                    learning_rate
-                    * ad_sum[team]
-                    / ad_weight[team]
-                )
-
-            home_attack[team] = clamp(
-                home_attack[team],
-                0.55,
-                1.65,
-            )
-
-            home_defense[team] = clamp(
-                home_defense[team],
-                0.55,
-                1.65,
-            )
-
-            away_attack[team] = clamp(
-                away_attack[team],
-                0.55,
-                1.65,
-            )
-
-            away_defense[team] = clamp(
-                away_defense[team],
-                0.55,
-                1.65,
-            )
-
-        # Normalize the four strength groups so that
-        # league averages remain represented by the base rates.
-        for values, counts in [
-            (home_attack, home_counts),
-            (home_defense, home_counts),
-            (away_attack, away_counts),
-            (away_defense, away_counts),
-        ]:
-            denominator = 0.0
-            numerator = 0.0
-
-            for team in teams:
-                count = max(1, counts.get(team, 1))
-                numerator += count * math.log(
-                    max(0.01, values[team])
-                )
-                denominator += count
-
-            geometric_mean = math.exp(
-                numerator / max(1.0, denominator)
-            )
-
-            for team in teams:
-                values[team] = clamp(
-                    values[team] / geometric_mean,
-                    0.55,
-                    1.65,
-                )
-
-    # --------------------------------------------------------
-    # Shrink small samples toward league average
-    # --------------------------------------------------------
-
-    team_strengths = {}
-
-    for team in teams:
-        sample_size = (
-            home_counts.get(team, 0)
-            + away_counts.get(team, 0)
-        )
-
-        reliability = sample_size / (
-            sample_size + 10.0
-        )
-
-        def shrink(value):
-            return 1.0 + reliability * (value - 1.0)
-
-        team_strengths[team] = {
-            "home_attack": shrink(home_attack[team]),
-            "home_defense": shrink(home_defense[team]),
-            "away_attack": shrink(away_attack[team]),
-            "away_defense": shrink(away_defense[team]),
-            "matches": sample_size,
-        }
-
-    return {
-        "teams": team_strengths,
-        "home_average": home_average,
-        "away_average": away_average,
-        "rows": len(data),
-        "using_xg": using_xg,
-        "latest_date": (
-            latest_date.strftime("%Y-%m-%d")
-            if latest_date is not None
-            else None
-        ),
-    }
-
-
-@st.cache_data(show_spinner=False)
-def prepare_history_from_bytes(raw_bytes):
-    """
-    Read and prepare an uploaded historical CSV, then fit the strength model.
-    """
-    import io
-
-    data = pd.read_csv(io.BytesIO(raw_bytes))
-
-    def column_key(value):
-        return "".join(
-            char for char in str(value).lower()
-            if char.isalnum()
-        )
-
-    def find_column(candidates):
-        lookup = {
-            column_key(column): column
-            for column in data.columns
-        }
-
-        for candidate in candidates:
-            key = column_key(candidate)
-            if key in lookup:
-                return lookup[key]
-
+def weighted_average(values, weights):
+    if not values:
         return None
-
-    home_team_col = find_column([
-        "home_team",
-        "hometeam",
-        "home",
-        "home_team_name"
-    ])
-
-    away_team_col = find_column([
-        "away_team",
-        "awayteam",
-        "away",
-        "away_team_name"
-    ])
-
-    home_goals_col = find_column([
-        "home_goals",
-        "homegoals",
-        "fthg",
-        "home_score",
-        "homescore",
-        "hg"
-    ])
-
-    away_goals_col = find_column([
-        "away_goals",
-        "awaygoals",
-        "ftag",
-        "away_score",
-        "awayscore",
-        "ag"
-    ])
-
-    if not home_team_col:
-        raise ValueError(
-            "Could not find the home-team column. "
-            "Use a column such as home_team or HomeTeam."
-        )
-
-    if not away_team_col:
-        raise ValueError(
-            "Could not find the away-team column. "
-            "Use a column such as away_team or AwayTeam."
-        )
-
-    if not home_goals_col:
-        raise ValueError(
-            "Could not find the home-goals column. "
-            "Use home_goals or FTHG."
-        )
-
-    if not away_goals_col:
-        raise ValueError(
-            "Could not find the away-goals column. "
-            "Use away_goals or FTAG."
-        )
-
-    rename_map = {
-        home_team_col: "home_team",
-        away_team_col: "away_team",
-        home_goals_col: "home_goals",
-        away_goals_col: "away_goals",
-    }
-
-    date_col = find_column([
-        "date",
-        "match_date",
-        "datetime"
-    ])
-
-    home_xg_col = find_column([
-        "home_xg",
-        "homexg",
-        "hxg",
-        "home_expected_goals",
-        "expected_home_goals"
-    ])
-
-    away_xg_col = find_column([
-        "away_xg",
-        "awayxg",
-        "axg",
-        "away_expected_goals",
-        "expected_away_goals"
-    ])
-
-    competition_col = find_column([
-        "competition",
-        "league",
-        "tournament"
-    ])
-
-    if date_col:
-        rename_map[date_col] = "date"
-
-    if home_xg_col:
-        rename_map[home_xg_col] = "home_xg"
-
-    if away_xg_col:
-        rename_map[away_xg_col] = "away_xg"
-
-    if competition_col:
-        rename_map[competition_col] = "competition"
-
-    data = data.rename(columns=rename_map)
-
-    data["home_team"] = (
-        data["home_team"]
-        .astype(str)
-        .str.strip()
-        .map(norm)
-    )
-
-    data["away_team"] = (
-        data["away_team"]
-        .astype(str)
-        .str.strip()
-        .map(norm)
-    )
-
-    data["home_goals"] = pd.to_numeric(
-        data["home_goals"],
-        errors="coerce"
-    )
-
-    data["away_goals"] = pd.to_numeric(
-        data["away_goals"],
-        errors="coerce"
-    )
-
-    data = data.dropna(
-        subset=[
-            "home_team",
-            "away_team",
-            "home_goals",
-            "away_goals"
-        ]
-    )
-
-    data = data[
-        (data["home_goals"] >= 0)
-        & (data["away_goals"] >= 0)
-    ].copy()
-
-    if "date" in data.columns:
-        data["date"] = pd.to_datetime(
-            data["date"],
-            errors="coerce"
-        )
-
-    if "home_xg" in data.columns:
-        data["home_xg"] = pd.to_numeric(
-            data["home_xg"],
-            errors="coerce"
-        )
-
-    if "away_xg" in data.columns:
-        data["away_xg"] = pd.to_numeric(
-            data["away_xg"],
-            errors="coerce"
-        )
-
-    if "competition" in data.columns:
-        data["competition"] = (
-            data["competition"]
-            .astype(str)
-            .str.strip()
-        )
-
-    data = data.reset_index(drop=True)
-
-    if len(data) < 10:
-        raise ValueError(
-            "The CSV contains fewer than 10 valid matches. "
-            "Upload a larger historical dataset."
-        )
-
-    model = fit_strength_model(data)
-
-    return model
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return sum(values) / len(values)
+    return sum(v * w for v, w in zip(values, weights)) / total_weight
 
 
-def clamp(value, low, high):
-    return max(low, min(high, value))
+def build_recent_team_profile(fixtures, team_id):
+    rows = []
 
+    for fixture in fixtures:
+        row = extract_match_row(fixture, team_id)
+        if row:
+            rows.append(row)
 
-def form_adjustment(entries):
-    """
-    Convert recent results into modest attack/defence multipliers.
+    rows.sort(key=lambda x: x.get("date") or "")
+    rows = rows[-15:]
 
-    Most recent result gets the highest weight.
-    """
-    if not entries:
-        return 1.0, 1.0, None
-
-    n = len(entries)
+    if not rows:
+        return {
+            "matches": 0,
+            "home_matches": 0,
+            "away_matches": 0,
+            "gf": 1.35,
+            "ga": 1.35,
+            "home_gf": 1.45,
+            "home_ga": 1.20,
+            "away_gf": 1.25,
+            "away_ga": 1.35,
+            "points": 1.35,
+            "recent_results": [],
+        }
 
     weights = []
+    n = len(rows)
     for index in range(n):
-        age = n - 1 - index
-        weights.append(0.72 ** age)
+        weights.append(0.82 ** (n - 1 - index))
 
-    total_weight = sum(weights)
-
-    gf_avg = sum(
-        entry[0] * weights[index]
-        for index, entry in enumerate(entries)
-    ) / total_weight
-
-    ga_avg = sum(
-        entry[1] * weights[index]
-        for index, entry in enumerate(entries)
-    ) / total_weight
-
-    points = []
-
-    for gf, ga in entries:
-        if gf > ga:
-            points.append(3)
-        elif gf == ga:
-            points.append(1)
-        else:
-            points.append(0)
-
-    points_avg = sum(
-        points[index] * weights[index]
-        for index in range(n)
-    ) / total_weight
-
-    attack_multiplier = clamp(
-        1.0
-        + (gf_avg - 1.35) * 0.06
-        + (points_avg - 1.35) * 0.02,
-        0.90,
-        1.10
+    gf = weighted_average([r["gf"] for r in rows], weights)
+    ga = weighted_average([r["ga"] for r in rows], weights)
+    points = weighted_average(
+        [3 if r["result"] == "W" else 1 if r["result"] == "D" else 0 for r in rows],
+        weights,
     )
 
-    defence_multiplier = clamp(
-        1.0
-        + (ga_avg - 1.35) * 0.05,
-        0.92,
-        1.08
-    )
+    home_rows = [r for r in rows if r["venue"] == "home"]
+    away_rows = [r for r in rows if r["venue"] == "away"]
 
-    summary = {
-        "matches": n,
-        "gf_avg": gf_avg,
-        "ga_avg": ga_avg,
-        "points_avg": points_avg,
+    def venue_metric(venue_rows, key, fallback):
+        if not venue_rows:
+            return fallback
+        venue_weights = []
+        m = len(venue_rows)
+        for index in range(m):
+            venue_weights.append(0.85 ** (m - 1 - index))
+        return weighted_average(
+            [r[key] for r in venue_rows],
+            venue_weights,
+        )
+
+    return {
+        "matches": len(rows),
+        "home_matches": len(home_rows),
+        "away_matches": len(away_rows),
+        "gf": gf,
+        "ga": ga,
+        "home_gf": venue_metric(home_rows, "gf", 1.45),
+        "home_ga": venue_metric(home_rows, "ga", 1.20),
+        "away_gf": venue_metric(away_rows, "gf", 1.25),
+        "away_ga": venue_metric(away_rows, "ga", 1.35),
+        "points": points,
+        "recent_results": [r["result"] for r in rows[-5:]],
+        "rows": rows,
     }
 
-    return (
-        attack_multiplier,
-        defence_multiplier,
-        summary
+
+def profile_strength(profile):
+    # Convert recent scoring/conceding into restrained multipliers.
+    attack = clamp(
+        1.0
+        + (profile["gf"] - 1.35) * 0.09
+        + (profile["points"] - 1.35) * 0.025,
+        0.82,
+        1.18,
     )
 
+    defense = clamp(
+        1.0 + (profile["ga"] - 1.35) * 0.075,
+        0.84,
+        1.16,
+    )
 
-FORMATION_EFFECTS = {
-    "4-3-3": (1.015, 1.005),
-    "4-2-3-1": (1.010, 1.010),
+    return attack, defense
+
+# ============================================================
+# CONTEXT ADJUSTMENTS
+# ============================================================
+
+FORMATION = {
+    "4-3-3": (1.015, 1.000),
+    "4-2-3-1": (1.008, 0.995),
     "4-4-2": (1.000, 1.000),
-    "3-5-2": (1.005, 1.015),
-    "3-4-3": (1.015, 1.000),
-    "5-3-2": (0.985, 1.025),
-    "5-4-1": (0.970, 1.035),
-    "4-5-1": (0.985, 1.025),
-    "Other / Unknown": (1.000, 1.000),
+    "3-4-3": (1.018, 1.012),
+    "3-5-2": (1.005, 0.990),
+    "5-3-2": (0.985, 0.975),
+    "5-4-1": (0.970, 0.965),
+    "4-5-1": (0.985, 0.975),
 }
 
-
-MOTIVATION_EFFECTS = {
+MOTIVATION = {
     "Very Low": 0.975,
     "Low": 0.988,
     "Normal": 1.000,
@@ -1205,503 +639,224 @@ MOTIVATION_EFFECTS = {
     "Very High": 1.025,
 }
 
+WEATHER = {
+    "Clear": 1.000,
+    "Cloudy": 1.000,
+    "Light Rain": 0.985,
+    "Heavy Rain": 0.950,
+    "Strong Wind": 0.940,
+    "Extreme Heat": 0.965,
+    "Snow": 0.930,
+}
 
-ABSENCE_EFFECTS = {
-    "Not specified": (1.000, 1.000),
-    "Attackers": (0.970, 1.000),
-    "Midfielders": (0.985, 1.010),
-    "Defenders": (1.000, 1.030),
-    "Goalkeeper": (1.000, 1.040),
-    "Mixed": (0.975, 1.025),
+PITCH = {
+    "Excellent": 1.000,
+    "Good": 1.000,
+    "Average": 0.985,
+    "Poor": 0.960,
 }
 
 
-def team_context_multiplier(
+def form_adjustments(profile):
+    attack, defense = profile_strength(profile)
+    return attack, defense
+
+
+def context_multiplier(
     formation,
     motivation,
-    absence_count,
-    absence_importance,
+    absences,
     absence_type,
-    form_entries,
-    form_weight,
+    absence_importance,
+    profile,
     rest_days,
-    match_stage,
     aggregate_for,
     aggregate_against,
+    second_leg,
 ):
-    """
-    Return attack and defence multipliers for one team.
-    """
-
-    attack_multiplier = 1.0
-    defence_multiplier = 1.0
-
-    formation_attack, formation_defence = FORMATION_EFFECTS.get(
+    attack, defense = FORMATION.get(
         formation,
-        (1.0, 1.0)
+        (1.0, 1.0),
     )
 
-    attack_multiplier *= formation_attack
-    defence_multiplier *= formation_defence
-
-    attack_multiplier *= MOTIVATION_EFFECTS.get(
+    attack *= MOTIVATION.get(
         motivation,
-        1.0
-    )
-
-    absence_attack, absence_defence = ABSENCE_EFFECTS.get(
-        absence_type,
-        (1.0, 1.0)
-    )
-
-    importance = clamp(
-        absence_importance / 100.0,
-        0.0,
-        1.0
-    )
-
-    count_factor = clamp(
-        absence_count,
-        0,
-        5
-    )
-
-    absence_scale = min(
         1.0,
-        count_factor / 3.0
-    ) * importance
-
-    attack_multiplier *= (
-        1.0
-        + (absence_attack - 1.0) * absence_scale
     )
 
-    defence_multiplier *= (
-        1.0
-        + (absence_defence - 1.0) * absence_scale
-    )
+    if profile:
+        form_attack, form_defense = form_adjustments(profile)
+        attack *= 1 + (form_attack - 1) * 0.70
+        defense *= 1 + (form_defense - 1) * 0.70
 
-    if form_entries:
-        form_attack, form_defence, _ = form_adjustment(
-            form_entries
-        )
+    importance = absence_importance / 100.0
+    count = min(int(absences), 4)
 
-        form_weight_factor = clamp(
-            form_weight / 100.0,
-            0.0,
-            1.0
-        )
+    role_attack_penalty = {
+        "Attackers": 0.030,
+        "Midfielders": 0.018,
+        "Defenders": 0.006,
+        "Goalkeeper": 0.004,
+        "Mixed": 0.018,
+        "Not specified": 0.010,
+    }.get(absence_type, 0.010)
 
-        attack_multiplier *= (
-            1.0
-            + (form_attack - 1.0)
-            * form_weight_factor
-        )
+    role_defence_penalty = {
+        "Attackers": 0.003,
+        "Midfielders": 0.012,
+        "Defenders": 0.028,
+        "Goalkeeper": 0.040,
+        "Mixed": 0.020,
+        "Not specified": 0.010,
+    }.get(absence_type, 0.010)
 
-        defence_multiplier *= (
-            1.0
-            + (form_defence - 1.0)
-            * form_weight_factor
-        )
+    attack *= 1 - role_attack_penalty * count * importance
+    defense *= 1 + role_defence_penalty * count * importance
 
-    # Rest/fatigue adjustment.
-    # Five days is treated as neutral.
-    rest_delta = clamp(
-        (rest_days - 5) * 0.005,
+    # Fatigue: 5 days is treated as neutral.
+    rest_effect = clamp(
+        (rest_days - 5) * 0.006,
         -0.025,
-        0.015
+        0.018,
     )
 
-    attack_multiplier *= 1.0 + rest_delta
-
-    # Fatigue tends to hurt defensive concentration slightly more.
-    defence_multiplier *= 1.0 - rest_delta * 0.65
-
-    # Knockout second-leg aggregate pressure.
-    if match_stage == "Knockout — second leg":
+    attack *= 1 + rest_effect
+    defense *= 1 - rest_effect * 0.45
+    if second_leg:
         if aggregate_for < aggregate_against:
-            attack_multiplier *= 1.045
-            defence_multiplier *= 1.015
-
+            attack *= 1.045
+            defense *= 1.012
         elif aggregate_for > aggregate_against:
-            attack_multiplier *= 0.985
-            defence_multiplier *= 0.990
-
+            attack *= 0.985
+            defense *= 0.992
         else:
-            attack_multiplier *= 1.015
-
-    attack_multiplier = clamp(
-        attack_multiplier,
-        0.80,
-        1.20
-    )
-
-    defence_multiplier = clamp(
-        defence_multiplier,
-        0.85,
-        1.20
-    )
+            attack *= 1.015
 
     return (
-        attack_multiplier,
-        defence_multiplier
+        clamp(attack, 0.82, 1.20),
+        clamp(defense, 0.82, 1.20),
     )
 
+# ============================================================
+# EXPECTED GOALS
+# ============================================================
 
-def conditions_multiplier(weather, pitch):
-    """
-    Small environmental adjustments.
-    These are intentionally conservative.
-    """
-
-    weather_effects = {
-        "Clear": 1.000,
-        "Cloudy": 1.000,
-        "Light Rain": 0.985,
-        "Heavy Rain": 0.950,
-        "Strong Wind": 0.940,
-        "Extreme Heat": 0.965,
-        "Snow": 0.930,
-    }
-
-    pitch_effects = {
-        "Excellent": 1.005,
-        "Good": 1.000,
-        "Average": 0.990,
-        "Poor": 0.960,
-    }
-
-    weather_factor = weather_effects.get(
-        weather,
-        1.000
-    )
-
-    pitch_factor = pitch_effects.get(
-        pitch,
-        1.000
-    )
-
-    return weather_factor * pitch_factor
-
-
-def get_team_strength(model, team_key):
-    """
-    Return strengths from the historical model.
-    Unknown teams are treated as average rather than inventing
-    historical strength.
-    """
-
-    if model is not None:
-        return model["teams"].get(
-            team_key,
-            {
-                "home_attack": 1.0,
-                "home_defense": 1.0,
-                "away_attack": 1.0,
-                "away_defense": 1.0,
-                "matches": 0,
-            }
-        )
-
-    data = TEAM_DATA.get(team_key)
-
-    if data is None:
-        return {
-            "home_attack": 1.0,
-            "home_defense": 1.0,
-            "away_attack": 1.0,
-            "away_defense": 1.0,
-            "matches": 0,
-        }
-
-    # Convert the built-in illustrative ratings into relative strengths.
-    return {
-        "home_attack": data["attack"] / 1.50,
-        "home_defense": data["defense"] / 1.25,
-        "away_attack": data["attack"] / 1.50,
-        "away_defense": data["defense"] / 1.25,
-        "matches": 0,
-    }
-
-
-def predict_expected_goals(
-    home_key,
-    away_key,
+def predict_xg(
+    home_profile,
+    away_profile,
+    home_context,
+    away_context,
     venue,
-    model,
-    home_attack_context,
-    home_defence_context,
-    away_attack_context,
-    away_defence_context,
     weather,
     pitch,
 ):
-    """
-    Produce expected goals using either:
-    1. historical CSV strength model, or
-    2. built-in fallback ratings.
-    """
+    home_attack, home_defense = profile_strength(home_profile)
+    away_attack, away_defense = profile_strength(away_profile)
 
-    home_strength = get_team_strength(
-        model,
-        home_key
-    )
+    # Location-specific recent rates are more useful than a fixed team list.
+    if venue == "Away team venue":
+        base_home = 1.25
+        base_away = 1.45
+        home_attack_rate = away_profile["away_gf"] / 1.25
+        away_attack_rate = home_profile["home_gf"] / 1.45
+        home_defence_rate = away_profile["away_ga"] / 1.35
+        away_defence_rate = home_profile["home_ga"] / 1.20
 
-    away_strength = get_team_strength(
-        model,
-        away_key
-    )
-
-    if model is not None:
-        home_average = model["home_average"]
-        away_average = model["away_average"]
-
-        if venue == "Home team venue":
-            base_home = home_average
-            base_away = away_average
-
-            home_attack = home_strength["home_attack"]
-            home_defence = home_strength["home_defense"]
-
-            away_attack = away_strength["away_attack"]
-            away_defence = away_strength["away_defense"]
-
-        elif venue == "Away team venue":
-            base_home = away_average
-            base_away = home_average
-
-            home_attack = home_strength["away_attack"]
-            home_defence = home_strength["away_defense"]
-
-            away_attack = away_strength["home_attack"]
-            away_defence = away_strength["home_defense"]
-
-        elif venue == "Neutral venue":
-            neutral_average = (
-                home_average + away_average
-            ) / 2.0
-
-            base_home = neutral_average
-            base_away = neutral_average
-
-            home_attack = (
-                home_strength["home_attack"]
-                + home_strength["away_attack"]
-            ) / 2.0
-
-            home_defence = (
-                home_strength["home_defense"]
-                + home_strength["away_defense"]
-            ) / 2.0
-
-            away_attack = (
-                away_strength["home_attack"]
-                + away_strength["away_attack"]
-            ) / 2.0
-
-            away_defence = (
-                away_strength["home_defense"]
-                + away_strength["away_defense"]
-            ) / 2.0
-
-        else:
-            base_home = home_average
-            base_away = away_average
-
-            home_attack = home_strength["home_attack"]
-            home_defence = home_strength["home_defense"]
-
-            away_attack = away_strength["away_attack"]
-            away_defence = away_strength["away_defense"]
-
-        home_xg = (
-            base_home
-            * home_attack
-            * away_defence
-            * home_attack_context
-            * away_defence_context
-        )
-
-        away_xg = (
-            base_away
-            * away_attack
-            * home_defence
-            * away_attack_context
-            * home_defence_context
-        )
+    elif venue == "Neutral venue":
+        base_home = 1.35
+        base_away = 1.35
+        home_attack_rate = home_attack
+        away_attack_rate = away_attack
+        home_defence_rate = home_defense
+        away_defence_rate = away_defense
 
     else:
-        # Built-in illustrative model.
-        fallback_home_average = 1.50
-        fallback_away_average = 1.20
+        base_home = 1.50
+        base_away = 1.20
+        home_attack_rate = home_profile["home_gf"] / 1.45
+        away_attack_rate = away_profile["away_gf"] / 1.25
+        home_defence_rate = home_profile["home_ga"] / 1.20
+        away_defence_rate = away_profile["away_ga"] / 1.35
 
-        if venue == "Home team venue":
-            base_home = fallback_home_average
-            base_away = fallback_away_average
+    home_attack_rate = clamp(home_attack_rate, 0.55, 1.60)
+    away_attack_rate = clamp(away_attack_rate, 0.55, 1.60)
+    home_defence_rate = clamp(home_defence_rate, 0.55, 1.60)
+    away_defence_rate = clamp(away_defence_rate, 0.55, 1.60)
 
-            home_attack = home_strength["home_attack"]
-            home_defence = home_strength["home_defense"]
-
-            away_attack = away_strength["away_attack"]
-            away_defence = away_strength["away_defense"]
-
-        elif venue == "Away team venue":
-            base_home = fallback_away_average
-            base_away = fallback_home_average
-
-            home_attack = home_strength["away_attack"]
-            home_defence = home_strength["away_defense"]
-
-            away_attack = away_strength["home_attack"]
-            away_defence = away_strength["home_defense"]
-
-        elif venue == "Neutral venue":
-            neutral_average = (
-                fallback_home_average
-                + fallback_away_average
-            ) / 2.0
-
-            base_home = neutral_average
-            base_away = neutral_average
-
-            home_attack = (
-                home_strength["home_attack"]
-                + home_strength["away_attack"]
-            ) / 2.0
-
-            home_defence = (
-                home_strength["home_defense"]
-                + home_strength["away_defense"]
-            ) / 2.0
-
-            away_attack = (
-                away_strength["home_attack"]
-                + away_strength["away_attack"]
-            ) / 2.0
-
-            away_defence = (
-                away_strength["home_defense"]
-                + away_strength["away_defense"]
-            ) / 2.0
-
-        else:
-            base_home = fallback_home_average
-            base_away = fallback_away_average
-
-            home_attack = home_strength["home_attack"]
-            home_defence = home_strength["home_defense"]
-
-            away_attack = away_strength["away_attack"]
-            away_defence = away_strength["away_defense"]
-
-        home_xg = (
-            base_home
-            * home_attack
-            * away_defence
-            * home_attack_context
-            * away_defence_context
-        )
-
-        away_xg = (
-            base_away
-            * away_attack
-            * home_defence
-            * away_attack_context
-            * home_defence_context
-        )
-
-        # Preserve the built-in home advantage only when the
-        # home team is actually at home.
-        if venue == "Home team venue":
-            home_data = TEAM_DATA.get(home_key)
-
-            if home_data:
-                home_xg += home_data["home_adv"]
-
-    condition_factor = conditions_multiplier(
-        weather,
-        pitch
+    home_xg = (
+        base_home
+        * home_attack_rate
+        * away_defence_rate
+        * home_context[0]
+        * away_context[1]
     )
 
-    home_xg *= condition_factor
-    away_xg *= condition_factor
-
-    home_xg = clamp(
-        home_xg,
-        0.05,
-        5.00
+    away_xg = (
+        base_away
+        * away_attack_rate
+        * home_defence_rate
+        * away_context[0]
+        * home_context[1]
     )
 
-    away_xg = clamp(
-        away_xg,
-        0.05,
-        5.00
+    environment_factor = (
+        WEATHER.get(weather, 1.0)
+        * PITCH.get(pitch, 1.0)
     )
 
-    return home_xg, away_xg
+    home_xg *= environment_factor
+    away_xg *= environment_factor
 
+    return (
+        clamp(home_xg, 0.05, 4.50),
+        clamp(away_xg, 0.05, 4.50),
+    )
 
-def calculate_matrix(
-    home_xg,
-    away_xg,
-    max_goals=8,
-    rho=-0.05
-):
-    """
-    Dixon-Coles-style score probability matrix.
-    """
+# ============================================================
+# DIXON-COLES / POISSON
+# ============================================================
 
+def poisson_pmf(k, lam):
+    if lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    return math.exp(-lam) * (lam ** k) / math.factorial(k)
+
+    if second_leg:
+        if aggregate_for < aggregate_against:
+            def calculate_matrix(home_xg, away_xg, max_goals=10, rho=-0.05):
     matrix = []
+    total = 0.0
 
-    for home_goals in range(max_goals + 1):
+    for hg in range(max_goals + 1):
         row = []
-
-        for away_goals in range(max_goals + 1):
-            probability = (
-                poisson_pmf(home_goals, home_xg)
-                * poisson_pmf(away_goals, away_xg)
+        for ag in range(max_goals + 1):
+            p = (
+                poisson_pmf(hg, home_xg)
+                * poisson_pmf(ag, away_xg)
             )
 
-            tau = 1.0
+            if hg == 0 and ag == 0:
+                tau = 1 - home_xg * away_xg * rho
+            elif hg == 0 and ag == 1:
+                tau = 1 + home_xg * rho
+            elif hg == 1 and ag == 0:
+                tau = 1 + away_xg * rho
+            elif hg == 1 and ag == 1:
+                tau = 1 - rho
+            else:
+                tau = 1.0
 
-            if home_goals == 0 and away_goals == 0:
-                tau = 1.0 - (
-                    home_xg
-                    * away_xg
-                    * rho
-                )
-
-            elif home_goals == 0 and away_goals == 1:
-                tau = 1.0 + away_xg * rho
-
-            elif home_goals == 1 and away_goals == 0:
-                tau = 1.0 + home_xg * rho
-
-            elif home_goals == 1 and away_goals == 1:
-                tau = 1.0 - rho
-
-            row.append(
-                max(
-                    0.0,
-                    probability * tau
-                )
-            )
+            p *= max(tau, 0.01)
+            row.append(p)
+            total += p
 
         matrix.append(row)
 
-    total_probability = sum(
-        sum(row)
-        for row in matrix
-    )
-
-    if total_probability <= 0:
-        total_probability = 1.0
+    if total <= 0:
+        raise RuntimeError("Probability matrix could not be normalized.")
 
     matrix = [
-        [
-            value / total_probability
-            for value in row
-        ]
+        [p / total for p in row]
         for row in matrix
     ]
 
@@ -1709,1764 +864,1279 @@ def calculate_matrix(
     draw = 0.0
     away_win = 0.0
 
-    over_05 = 0.0
-    over_15 = 0.0
-    over_25 = 0.0
-    over_35 = 0.0
-    over_45 = 0.0
-
-    btts_yes = 0.0
-    home_clean_sheet = 0.0
-    away_clean_sheet = 0.0
-
+    markets = Counter()
     scorelines = []
+    home_clean = 0.0
+    away_clean = 0.0
 
-    for home_goals in range(max_goals + 1):
-        for away_goals in range(max_goals + 1):
-            probability = matrix[
-                home_goals
-            ][
-                away_goals
-            ]
+    for hg in range(max_goals + 1):
+        for ag in range(max_goals + 1):
+            p = matrix[hg][ag]
 
-            total_goals = (
-                home_goals
-                + away_goals
-            )
-
-            if home_goals > away_goals:
-                home_win += probability
-
-            elif home_goals == away_goals:
-                draw += probability
-
+            if hg > ag:
+                home_win += p
+            elif hg == ag:
+                draw += p
             else:
-                away_win += probability
+                away_win += p
 
-            if total_goals >= 1:
-                over_05 += probability
+            goals = hg + ag
 
-            if total_goals >= 2:
-                over_15 += probability
+            for line in [0.5, 1.5, 2.5, 3.5, 4.5]:
+                if goals > line:
+                    markets[f"over_{str(line).replace('.', '')}"] += p
 
-            if total_goals >= 3:
-                over_25 += probability
+            if hg > 0 and ag > 0:
+                markets["btts_yes"] += p
 
-            if total_goals >= 4:
-                over_35 += probability
+            if ag == 0:
+                home_clean += p
 
-            if total_goals >= 5:
-                over_45 += probability
+            if hg == 0:
+                away_clean += p
 
-            if (
-                home_goals >= 1
-                and away_goals >= 1
-            ):
-                btts_yes += probability
+            scorelines.append((hg, ag, p))
 
-            if away_goals == 0:
-                home_clean_sheet += probability
-
-            if home_goals == 0:
-                away_clean_sheet += probability
-
-            scorelines.append(
-                (
-                    home_goals,
-                    away_goals,
-                    probability
-                )
-            )
-
-    scorelines.sort(
-        key=lambda item: item[2],
-        reverse=True
-    )
+    scorelines.sort(key=lambda x: x[2], reverse=True)
 
     return {
         "home_win": home_win,
         "draw": draw,
         "away_win": away_win,
-
-        "over_05": over_05,
-        "over_15": over_15,
-        "over_25": over_25,
-        "over_35": over_35,
-        "over_45": over_45,
-
-        "under_05": 1.0 - over_05,
-        "under_15": 1.0 - over_15,
-             "under_25": 1.0 - over_25,
-        "under_35": 1.0 - over_35,
-        "under_45": 1.0 - over_45,
-
-        "btts_yes": btts_yes,
-        "btts_no": 1.0 - btts_yes,
-
-        "home_clean_sheet": home_clean_sheet,
-        "away_clean_sheet": away_clean_sheet,
-
+        "over_05": markets["over_05"],
+        "over_15": markets["over_15"],
+        "over_25": markets["over_25"],
+        "over_35": markets["over_35"],
+        "over_45": markets["over_45"],
+        "under_05": 1 - markets["over_05"],
+        "under_15": 1 - markets["over_15"],
+        "under_25": 1 - markets["over_25"],
+        "under_35": 1 - markets["over_35"],
+        "under_45": 1 - markets["over_45"],
+        "btts_yes": markets["btts_yes"],
+        "btts_no": 1 - markets["btts_yes"],
+        "home_clean_sheet": home_clean,
+        "away_clean_sheet": away_clean,
         "home_or_draw": home_win + draw,
         "draw_or_away": draw + away_win,
         "home_or_away": home_win + away_win,
-
         "top_scores": scorelines[:10],
         "matrix": matrix,
     }
 
 
 def poisson_sample(lam, rng):
-    """
-    Knuth Poisson sampler.
-    """
-
     if lam <= 0:
         return 0
 
-    limit = math.exp(-lam)
-
+    threshold = math.exp(-lam)
     product = 1.0
-    count = 0
+    k = 0
 
-    while product > limit:
-        count += 1
+    while product > threshold:
+        k += 1
         product *= rng.random()
 
-    return count - 1
+    return k - 1
 
 
-def run_monte_carlo(
-    home_xg,
-    away_xg,
-    n_sims,
-    seed
-):
+def run_monte_carlo(home_xg, away_xg, n_sims, seed=42):
     rng = random.Random(seed)
-
-    home_wins = 0
-    draws = 0
-    away_wins = 0
-
-    over_05 = 0
-    over_15 = 0
-    over_25 = 0
-    over_35 = 0
-
-    btts = 0
-
+    counts = Counter()
     score_counter = Counter()
-
     total_goals = 0
 
     for _ in range(n_sims):
+        hg = poisson_sample(home_xg, rng)
+        ag = poisson_sample(away_xg, rng)
 
-        home_goals = poisson_sample(
-            home_xg,
-            rng
-        )
+        score_counter[(hg, ag)] += 1
+        total_goals += hg + ag
 
-        away_goals = poisson_sample(
-            away_xg,
-            rng
-        )
-
-        score_counter[
-            (home_goals, away_goals)
-        ] += 1
-
-        goals = (
-            home_goals
-            + away_goals
-        )
-
-        total_goals += goals
-
-        if home_goals > away_goals:
-            home_wins += 1
-
-        elif home_goals == away_goals:
-            draws += 1
-
+        if hg > ag:
+            counts["home_win"] += 1
+        elif hg == ag:
+            counts["draw"] += 1
         else:
-            away_wins += 1
+            counts["away_win"] += 1
 
-        if goals >= 1:
-            over_05 += 1
+        if hg + ag >= 1:
+            counts["over_05"] += 1
+        if hg + ag >= 2:
+            counts["over_15"] += 1
+        if hg + ag >= 3:
+            counts["over_25"] += 1
+        if hg + ag >= 4:
+            counts["over_35"] += 1
+        if hg + ag >= 5:
+            counts["over_45"] += 1
+        if hg > 0 and ag > 0:
+            counts["btts_yes"] += 1
 
-        if goals >= 2:
-            over_15 += 1
+    result = {
+        key: counts[key] / n_sims
+        for key in [
+            "home_win",
+            "draw",
+            "away_win",
+            "over_05",
+            "over_15",
+            "over_25",
+            "over_35",
+            "over_45",
+            "btts_yes",
+        ]
+                }
+    result["samples"] = n_sims
+    result["average_goals"] = total_goals / n_sims
+    result["top_scores"] = [
+        (hg, ag, count / n_sims)
+        for (hg, ag), count in score_counter.most_common(10)
+    ]
 
-        if goals >= 3:
-            over_25 += 1
+    return result
 
-        if goals >= 4:
-            over_35 += 1
+# ============================================================
+# ODDS / VALUE ENGINE
+# ============================================================
 
-        if (
-            home_goals > 0
-            and away_goals > 0
-        ):
-            btts += 1
+def parse_odds_response(odds_response):
+    rows = []
 
-    def probability(count):
-        return count / n_sims
+    for bookmaker_block in odds_response:
+        bookmaker = bookmaker_block.get("bookmaker", {})
+        bookmaker_name = bookmaker.get("name", "Unknown")
 
-    return {
-        "home_win": probability(home_wins),
-        "draw": probability(draws),
-        "away_win": probability(away_wins),
+        for bet in bookmaker.get("bets", []):
+            bet_name = bet.get("name", "")
 
-        "over_05": probability(over_05),
-        "over_15": probability(over_15),
-        "over_25": probability(over_25),
-        "over_35": probability(over_35),
+            if bet_name.lower() not in {
+                "match winner",
+                "1x2",
+                "winner",
+            }:
+                continue
 
-        "btts_yes": probability(btts),
+            for value in bet.get("values", []):
+                label = value.get("value")
+                odd = safe_float(value.get("odd"))
+                if odd and label:
+                    rows.append({
+                        "Bookmaker": bookmaker_name,
+                        "Outcome": label,
+                        "Odds": odd,
+                    })
 
-        "average_goals": (
-            total_goals / n_sims
-        ),
+    return rows
 
-        "top_scores": [
-            (
-                home_goals,
-                away_goals,
-                count / n_sims
-            )
-            for (
-                home_goals,
-                away_goals
-            ), count in score_counter.most_common(10)
-        ],
 
-        "samples": n_sims,
+def normalize_market_probs(rows):
+    """Remove bookmaker margin from a single 1X2 market."""
+    raw = {}
+    for row in rows:
+        raw.setdefault(row["Outcome"], []).append(row["Odds"])
+
+    best = {
+        outcome: min(values)
+        for outcome, values in raw.items()
+        if values
     }
 
+    implied = {
+        outcome: implied_probability(odd)
+        for outcome, odd in best.items()
+    }
 
-def mc_standard_error(
-    probability,
-    samples
+    total = sum(v for v in implied.values() if v)
+
+    if total <= 0:
+        return best, {}
+
+    fair_market = {
+        outcome: value / total
+        for outcome, value in implied.items()
+        if value
+    }
+
+    return best, fair_market
+
+
+def value_analysis(matrix_result, odds_rows, home_team, away_team):
+    if not odds_rows:
+        return None
+
+    best_odds, market_probs = normalize_market_probs(odds_rows)
+
+    mapping = {
+        "Home": home_team,
+        "Draw": "Draw",
+        "Away": away_team,
+    }
+
+    model_probs = {
+        "Home": matrix_result["home_win"],
+        "Draw": matrix_result["draw"],
+        "Away": matrix_result["away_win"],
+    }
+
+    rows = []
+
+    for market_label, model_probability in model_probs.items():
+        market_team_name = mapping[market_label]
+
+        market_probability = None
+        market_odds = None
+
+        # API-Football commonly uses Home/Draw/Away.
+        for candidate in [
+            market_label,
+            market_team_name,
+        ]:
+            if candidate in market_probs:
+                market_probability = market_probs[candidate]
+            if candidate in best_odds:
+                market_odds = best_odds[candidate]
+
+        if market_probability is None:
+            continue
+
+        edge = model_probability - market_probability
+        fair = fair_odds(model_probability)
+        value_flag = (
+            edge >= 0.05
+            and market_odds is not None
+            and market_odds > fair
+        )
+
+        rows.append({
+            "Outcome": market_team_name,
+            "Model Probability": model_probability,
+            "Market Probability": market_probability,
+            "Edge": edge,
+            "Best Odds": market_odds,
+            "Model Fair Odds": fair,
+            "Potential Value": value_flag,
+        })
+        return rows
+
+# ============================================================
+# EXPLANATION ENGINE
+# ============================================================
+
+def build_explanation(
+    home_team,
+    away_team,
+    home_profile,
+    away_profile,
+    home_xg,
+    away_xg,
+    matrix_result,
+    injuries_home,
+    injuries_away,
+    h2h,
+    home_context,
+    away_context,
 ):
-    if samples <= 0:
-        return 0.0
+    reasons = []
+    risks = []
 
-    return math.sqrt(
-        probability
-        * (1.0 - probability)
-        / samples
-    )
+    home_attack_edge = home_profile["gf"] - away_profile["ga"]
+    away_attack_edge = away_profile["gf"] - home_profile["ga"]
 
-
-def data_coverage_score(
-    history_model,
-    home_key,
-    away_key,
-    home_form,
-    away_form,
-    home_lineup,
-    away_lineup,
-    venue,
-    weather,
-    pitch,
-):
-    """
-    Data coverage is NOT a guarantee of prediction accuracy.
-    """
-
-    score = 0
-
-    if history_model is not None:
-
-        rows = history_model["rows"]
-
-        if rows >= 1000:
-            score += 45
-
-        elif rows >= 500:
-            score += 40
-
-        elif rows >= 200:
-            score += 35
-
-        elif rows >= 50:
-            score += 27
-
-        else:
-            score += 18
-
-        home_sample = (
-            history_model["teams"]
-            .get(home_key, {})
-            .get("matches", 0)
+    if home_attack_edge > 0.25:
+        reasons.append(
+            f"{home_team} has the stronger recent scoring-versus-opponent-defence profile: "
+            f"{home_profile['gf']:.2f} goals per match versus {away_profile['ga']:.2f} conceded."
+        )
+    elif away_attack_edge > 0.25:
+        reasons.append(
+            f"{away_team} has the stronger recent attacking-versus-defence matchup: "
+            f"{away_profile['gf']:.2f} scored versus {home_profile['ga']:.2f} conceded."
         )
 
-        away_sample = (
-            history_model["teams"]
-            .get(away_key, {})
-            .get("matches", 0)
+    if home_profile["points"] - away_profile["points"] > 0.35:
+        reasons.append(
+            f"Recent weighted points favour {home_team} "
+            f"({home_profile['points']:.2f} per match versus {away_profile['points']:.2f})."
+        )
+    elif away_profile["points"] - home_profile["points"] > 0.35:
+        reasons.append(
+            f"Recent weighted points favour {away_team} "
+            f"({away_profile['points']:.2f} per match versus {home_profile['points']:.2f})."
         )
 
-        if home_sample >= 10:
-            score += 8
-
-        elif home_sample >= 5:
-            score += 4
-
-        if away_sample >= 10:
-            score += 8
-
-        elif away_sample >= 5:
-            score += 4
-
-    else:
-
-        if home_key in TEAM_DATA:
-            score += 12
-
-        if away_key in TEAM_DATA:
-            score += 12
-
-    if home_form:
-        score += 6
-
-    if away_form:
-        score += 6
-
-    if home_lineup.strip():
-        score += 3
-
-    if away_lineup.strip():
-        score += 3
-
-    if venue != "Not sure":
-        score += 3
-
-    if weather != "Clear":
-        score += 1
-
-    if pitch != "Good":
-        score += 1
-
-    score = int(
-        clamp(
-            score,
-            0,
-            100
+    if home_profile["home_gf"] > home_profile["away_gf"] + 0.15:
+        reasons.append(
+            f"{home_team}'s recent home scoring rate is stronger than its overall rate."
         )
-    )
 
-    if score >= 75:
+    if away_profile["away_gf"] > away_profile["home_gf"] + 0.15:
+        reasons.append(
+            f"{away_team} has shown a meaningful away-scoring signal in its recent sample."
+        )
+
+    if home_xg > away_xg + 0.35:
+        reasons.append(
+            f"The combined model produces a sizeable expected-goals advantage for {home_team}: "
+            f"{home_xg:.2f} xG versus {away_xg:.2f}."
+        )
+    elif away_xg > home_xg + 0.35:
+        reasons.append(
+            f"The combined model produces a sizeable expected-goals advantage for {away_team}: "
+            f"{away_xg:.2f} xG versus {home_xg:.2f}."
+        )
+
+    if injuries_home:
+        risks.append(
+            f"{home_team} has {len(injuries_home)} reported availability issue(s); "
+            "their exact importance depends on player role and minutes."
+        )
+
+    if injuries_away:
+        risks.append(
+            f"{away_team} has {len(injuries_away)} reported availability issue(s); "
+            "their exact importance depends on player role and minutes."
+        )
+
+    if matrix_result["draw"] > 0.25:
+        risks.append(
+            "The draw probability is materially high, so the leading team outcome is not dominant."
+        )
+
+    if abs(home_xg - away_xg) < 0.25:
+        risks.append(
+            "Expected goals are close, meaning the match is structurally competitive and sensitive to small events."
+        )
+
+    if matrix_result["btts_yes"] > 0.60:
+        reasons.append(
+            "Both-teams-to-score probability is elevated, suggesting attacking contributions from both sides."
+        )
+
+    if matrix_result["over_25"] > 0.58:
+        reasons.append(
+            "The model's total-goals distribution leans toward three or more goals."
+        )
+
+    if not reasons:
+        reasons.append(
+            "The result is primarily driven by the combined recent-strength and expected-goals estimates rather than one extreme input."
+        )
+
+    if not risks:
+        risks.append(
+            "No single counter-factor dominates the model, but football outcomes remain uncertain even when the probability gap is meaningful."
+        )
+
+    return reasons, risks
+            # ============================================================
+# DATA COVERAGE
+# ============================================================
+
+def coverage_score(home_profile, away_profile, fixture, injuries_home, injuries_away, h2h):
+    score = 30
+
+    matches = home_profile["matches"] + away_profile["matches"]
+    score += min(25, matches)
+
+    if fixture:
+        score += 10
+
+    if injuries_home is not None:
+        score += 7
+
+    if injuries_away is not None:
+        score += 7
+
+    if h2h:
+        score += 5
+
+    if fixture and fixture.get("fixture", {}).get("venue", {}).get("name"):
+        score += 4
+
+    score = int(clamp(score, 0, 100))
+
+    if score >= 80:
         level = "High"
-
-    elif score >= 50:
+    elif score >= 60:
         level = "Moderate"
-
     else:
-        level = "Low"
+        level = "Limited"
 
     return score, level
-
-
-def format_percent(value):
-    return f"{value * 100:.1f}%"
-
-
-# ============================================================
-# APP UI
-# ============================================================
-
-st.markdown(
-    """
-    <div class="title">MATCHLAB Pro</div>
-    <div class="subtitle">
-        Context-aware football probability and simulation workspace
-        · 2026/2027
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <div class="welcome">
-        <b>Welcome to MATCHLAB Pro V2.</b><br>
-        Build a match using team strength, recent form,
-        tactical setup, absences, venue, rest, weather
-        and optional historical data.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
 with st.sidebar:
+    st.header("MATCHLAB V3")
 
-    st.header("MATCH SETUP")
-
-    simulation_mode = st.selectbox(
-        "Simulation mode",
+    page = st.radio(
+        "Workspace",
         [
-            "Standard",
-            "Competition-Aware",
-            "Lineup-Based",
-            "Full Context",
-            "Custom Simulation",
+            "Analyze Fixture",
+            "Prediction History",
         ],
-        index=3
-    )
-
-    team_options = [
-        "Aston Villa",
-        "Manchester City",
-        "Arsenal",
-        "Liverpool",
-        "Chelsea",
-        "Manchester United",
-        "Real Madrid",
-        "Barcelona",
-        "Bayern Munich",
-        "Inter Milan",
-        "Juventus",
-        "PSG",
-    ]
-
-    home_team = st.selectbox(
-        "Home team",
-        team_options,
-        index=0
-    )
-
-    away_team = st.selectbox(
-        "Away team",
-        team_options,
-        index=1
     )
 
     st.divider()
 
-    competition = st.selectbox(
-        "Competition",
-        COMPETITIONS
-    )
+    st.subheader("Data Connections")
 
-    season_choice = st.selectbox(
-        "Season",
-        [
-            "2026/2027",
-            "2025/2026",
-            "Other / Custom",
-        ]
-    )
+    if API_FOOTBALL_KEY:
+        st.success("Football data API connected")
+    else:
+        st.error("API-Football key missing")
 
-    custom_season = ""
-
-    if season_choice == "Other / Custom":
-
-        custom_season = st.text_input(
-            "Custom season",
-            placeholder="e.g. 2024/2025"
-        )
-
-    match_stage = st.selectbox(
-        "Match stage",
-        [
-            "Regular season",
-            "Group stage",
-            "Knockout — first leg",
-            "Knockout — second leg",
-            "Quarter-final",
-            "Semi-final",
-            "Final",
-            "Friendly",
-        ]
-    )
-
-    venue = st.selectbox(
-        "Venue",
-        [
-            "Home team venue",
-            "Away team venue",
-            "Neutral venue",
-            "Not sure",
-        ]
-    )
-
-    max_goals = st.slider(
-        "Maximum goals in score matrix",
-        min_value=5,
-        max_value=12,
-        value=8
-    )
-
-    form_weight = st.slider(
-        "Global recent-form weight",
-        min_value=0,
-        max_value=100,
-        value=70,
-        step=5
-    )
-
-    simulation_count = st.selectbox(
-        "Monte Carlo simulations",
-        [
-            1000,
-            5000,
-            10000,
-            25000,
-            50000,
-        ],
-        index=2
-    )
-
-    random_seed = st.number_input(
-        "Random seed",
-        min_value=1,
-        max_value=999999,
-        value=42
-    )
-
-    st.divider()
-
-    st.header("HISTORICAL DATA")
-
-    history_file = st.file_uploader(
-        "Optional historical CSV",
-        type=["csv"],
-        help=(
-            "Required columns: home_team, away_team, "
-            "home_goals, away_goals. "
-            "Optional: date, home_xg, away_xg."
-        )
-    )
+    if TAVILY_API_KEY or SERPER_API_KEY:
+        st.success("Web research connected")
+    else:
+        st.warning("Optional web research not connected")
 
     st.caption(
-        "Upload historical matches to replace the built-in "
-        "illustrative team ratings with a fitted strength model."
+        "Add API_FOOTBALL_KEY and optionally TAVILY_API_KEY or SERPER_API_KEY "
+        "to Streamlit Secrets."
     )
 
-
 # ============================================================
-# HISTORICAL MODEL
+# HISTORY PAGE
 # ============================================================
 
-history_model = None
-history_error = None
+if page == "Prediction History":
+    st.markdown(
+        '<div class="title">MATCHLAB History</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Previous predictions saved by this MATCHLAB instance.")
 
-if history_file is not None:
+    history_df = load_history(200)
 
-    try:
+    if history_df.empty:
+        st.info("No previous predictions have been saved yet.")
+        st.stop()
 
-        history_model = prepare_history_from_bytes(
-            history_file.getvalue()
-        )
+    display_df = history_df.copy()
 
-    except Exception as error:
-
-        history_error = str(error)
-
-        st.sidebar.error(
-            f"Historical data error: {history_error}"
-        )
-
-
-if history_model is not None:
-
-    st.sidebar.success(
-        f"Historical model active · "
-        f"{history_model['rows']} matches"
+    display_df["Prediction"] = display_df.apply(
+        lambda r: (
+            f"{r['predicted_outcome']} "
+            f"({r['predicted_score']})"
+        ),
+        axis=1,
     )
 
-    if history_model["using_xg"]:
+    display_df["Model"] = display_df[
+        ["home_probability", "draw_probability", "away_probability"]
+    ].max(axis=1).map(lambda x: f"{x * 100:.1f}%")
+                        columns = [
+        "id",
+        "created_at",
+        "match_date",
+        "competition",
+        "home_team",
+        "away_team",
+        "Prediction",
+        "Model",
+        "confidence_score",
+        "value_summary",
+        "result_checked",
+    ]
 
-        st.sidebar.caption(
-            "Model metric: historical xG"
+    st.dataframe(
+        display_df[columns],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Check a Previous Prediction")
+
+    selected_id = st.selectbox(
+        "Prediction ID",
+        display_df["id"].tolist(),
+    )
+
+    selected = display_df[
+        display_df["id"] == selected_id
+    ].iloc[0]
+
+    st.markdown(
+        f"### {selected['home_team']} vs {selected['away_team']}"
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric(
+            "Home",
+            pct(selected["home_probability"]),
         )
 
+    with c2:
+        st.metric(
+            "Draw",
+            pct(selected["draw_probability"]),
+        )
+
+    with c3:
+        st.metric(
+            "Away",
+            pct(selected["away_probability"]),
+        )
+
+    if int(selected["result_checked"] or 0) == 1:
+        actual = (
+            f"{int(selected['actual_home_goals'])}-"
+            f"{int(selected['actual_away_goals'])}"
+        )
+        st.success(f"Actual result recorded: {actual}")
     else:
+        st.info("Actual result has not been recorded yet.")
 
-        st.sidebar.caption(
-            "Model metric: historical goals"
+    with st.expander("Record actual result"):
+        actual_home = st.number_input(
+            "Actual home goals",
+            min_value=0,
+            max_value=20,
+            value=0,
+            key="history_actual_home",
+        )
+        actual_away = st.number_input(
+            "Actual away goals",
+            min_value=0,
+            max_value=20,
+            value=0,
+            key="history_actual_away",
         )
 
-    if history_model["latest_date"]:
+        if st.button("Save Actual Result"):
+            update_actual_result(
+                selected_id,
+                actual_home,
+                actual_away,
+            )
+            st.success("Actual result saved.")
+            st.rerun()
 
-        st.sidebar.caption(
-            f"Latest match: "
-            f"{history_model['latest_date']}"
-        )
-
-
-# ============================================================
-# VALIDATION
-# ============================================================
-
-home_key = norm(home_team)
-away_key = norm(away_team)
-
-if home_key == away_key:
-
-    st.error(
-        "Home and away teams must be different."
-    )
+    if st.button("Delete Selected Prediction"):
+        delete_prediction(selected_id)
+        st.success("Prediction deleted.")
+        st.rerun()
 
     st.stop()
 
-
 # ============================================================
-# PERFORMANCE EVIDENCE
-# ============================================================
-
-st.subheader("1. Performance Evidence")
-
-col1, col2 = st.columns(2)
-
-with col1:
-
-    st.markdown("### Home team form")
-
-    home_form_text = st.text_area(
-        "Recent results",
-        placeholder="2-1, 1-1, 3-0",
-        height=100,
-        key="home_form"
-    )
-
-    home_form_weight = st.slider(
-        "Home form influence",
-        min_value=0,
-        max_value=100,
-        value=70,
-        step=5,
-        key="home_form_weight"
-    )
-
-with col2:
-
-    st.markdown("### Away team form")
-
-    away_form_text = st.text_area(
-        "Recent results",
-        placeholder="1-0, 2-2, 0-1",
-        height=100,
-        key="away_form"
-    )
-
-    away_form_weight = st.slider(
-        "Away form influence",
-        min_value=0,
-        max_value=100,
-        value=70,
-        step=5,
-        key="away_form_weight"
-    )
-
-
-# ============================================================
-# LINEUPS
+# MAIN ANALYSIS PAGE
 # ============================================================
 
-st.subheader("2. Lineup & Availability")
-
-lineup_col1, lineup_col2 = st.columns(2)
-
-with lineup_col1:
-
-    st.markdown("### Home lineup")
-
-    home_lineup_image = st.file_uploader(
-        "Upload lineup image",
-        type=[
-            "png",
-            "jpg",
-            "jpeg",
-            "webp"
-        ],
-        key="home_lineup_image"
-    )
-
-    if home_lineup_image is not None:
-
-        st.image(
-            home_lineup_image,
-            caption=f"{home_team} lineup",
-            use_container_width=True
-        )
-
-    home_lineup_notes = st.text_area(
-        "Lineup notes",
-        placeholder=(
-            "Example: first-choice striker starts; "
-            "two defenders rotated."
-        ),
-        height=110,
-        key="home_lineup_notes"
-    )
-
-
-with lineup_col2:
-
-    st.markdown("### Away lineup")
-
-    away_lineup_image = st.file_uploader(
-        "Upload lineup image",
-        type=[
-            "png",
-            "jpg",
-            "jpeg",
-            "webp"
-        ],
-        key="away_lineup_image"
-    )
-
-    if away_lineup_image is not None:
-
-        st.image(
-            away_lineup_image,
-            caption=f"{away_team} lineup",
-            use_container_width=True
-        )
-
-    away_lineup_notes = st.text_area(
-        "Lineup notes",
-        placeholder=(
-            "Example: starting goalkeeper absent; "
-            "midfield unchanged."
-        ),
-        height=110,
-        key="away_lineup_notes"
-    )
-
-
-st.info(
-    "Lineup images are displayed for reference. "
-    "MATCHLAB does not automatically read names from the image. "
-    "Use the structured absence fields below to influence the model."
+st.markdown(
+    '<div class="title">MATCHLAB Pro V3</div>',
+    unsafe_allow_html=True,
 )
 
-
-# ============================================================
-# MATCH CONTEXT
-# ============================================================
-
-st.subheader("3. Match Context")
-
-context_home, context_away = st.columns(2)
-
-with context_home:
-
-    st.markdown(f"### {home_team}")
-
-    home_formation = st.selectbox(
-        "Formation",
-        FORMATIONS,
-        key="home_formation"
-    )
-
-    home_motivation = st.selectbox(
-        "Motivation",
-        [
-            "Very Low",
-            "Low",
-            "Normal",
-            "High",
-            "Very High",
-        ],
-        index=2,
-        key="home_motivation"
-    )
-
-    home_absences = st.number_input(
-        "Unavailable players",
-        min_value=0,
-        max_value=8,
-        value=0,
-        key="home_absences"
-    )
-
-    home_absence_type = st.selectbox(
-        "Main absence profile",
-        [
-            "Not specified",
-            "Attackers",
-            "Midfielders",
-            "Defenders",
-            "Goalkeeper",
-            "Mixed",
-        ],
-        key="home_absence_type"
-    )
-
-    home_absence_importance = st.slider(
-        "Average absence importance",
-        0,
-        100,
-        50,
-        5,
-        key="home_absence_importance"
-    )
-
-    home_absence_notes = st.text_input(
-        "Absence notes",
-        placeholder="Optional",
-        key="home_absence_notes"
-    )
-
-    home_rest_days = st.number_input(
-        "Rest days",
-        min_value=0,
-        max_value=14,
-        value=5,
-        key="home_rest_days"
-    )
-
-
-with context_away:
-
-    st.markdown(f"### {away_team}")
-
-    away_formation = st.selectbox(
-        "Formation",
-        FORMATIONS,
-        key="away_formation"
-    )
-
-    away_motivation = st.selectbox(
-        "Motivation",
-        [
-            "Very Low",
-            "Low",
-            "Normal",
-            "High",
-            "Very High",
-        ],
-        index=2,
-        key="away_motivation"
-    )
-
-    away_absences = st.number_input(
-        "Unavailable players",
-        min_value=0,
-        max_value=8,
-        value=0,
-        key="away_absences"
-    )
-
-    away_absence_type = st.selectbox(
-        "Main absence profile",
-        [
-            "Not specified",
-            "Attackers",
-            "Midfielders",
-            "Defenders",
-            "Goalkeeper",
-            "Mixed",
-        ],
-        key="away_absence_type"
-    )
-
-    away_absence_importance = st.slider(
-        "Average absence importance",
-        0,
-        100,
-        50,
-        5,
-        key="away_absence_importance"
-    )
-
-    away_absence_notes = st.text_input(
-        "Absence notes",
-        placeholder="Optional",
-        key="away_absence_notes"
-    )
-
-    away_rest_days = st.number_input(
-        "Rest days",
-        min_value=0,
-        max_value=14,
-        value=5,
-        key="away_rest_days"
-    )
-
-
-# ============================================================
-# SECOND LEG AGGREGATE
-# ============================================================
-
-aggregate_home = 0
-aggregate_away = 0
-
-if match_stage == "Knockout — second leg":
-
-    st.markdown("### Aggregate score")
-
-    aggregate_col1, aggregate_col2 = (
-        st.columns(2)
-    )
-
-    with aggregate_col1:
-
-        aggregate_home = st.number_input(
-            f"{home_team} aggregate goals",
-            min_value=0,
-            max_value=20,
-            value=0,
-            key="aggregate_home"
-        )
-
-    with aggregate_col2:
-
-        aggregate_away = st.number_input(
-            f"{away_team} aggregate goals",
-            min_value=0,
-            max_value=20,
-            value=0,
-            key="aggregate_away"
-        )
-
-
-# ============================================================
-# WEATHER / PITCH
-# ============================================================
-
-st.markdown("### Environment")
-
-environment_col1, environment_col2 = (
-    st.columns(2)
+st.markdown(
+    '<div class="subtitle">Fixture-first football analysis · data before odds · value after prediction</div>',
+    unsafe_allow_html=True,
 )
 
-with environment_col1:
+st.markdown(
+    """
+    <div class="welcome">
+    <b>Enter any real fixture.</b> MATCHLAB identifies the fixture,
+    gathers available football data, builds its own probability model,
+    explains the result and only then checks optional market odds for value.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    weather = st.selectbox(
-        "Weather",
-        [
-            "Clear",
-            "Cloudy",
-            "Light Rain",
-            "Heavy Rain",
-            "Strong Wind",
-            "Extreme Heat",
-            "Snow",
-        ]
+if not API_FOOTBALL_KEY:
+    st.error(
+        "MATCHLAB cannot perform live fixture analysis until API_FOOTBALL_KEY "
+        "is added to Streamlit Secrets."
+    )
+    st.markdown(
+        "Use a Streamlit secret named `API_FOOTBALL_KEY`. "
+        "The API provides fixtures, team data, head-to-head, injuries, lineups and odds."
+    )
+    st.stop()
+# ------------------------------------------------------------
+# Fixture input
+# ------------------------------------------------------------
+
+st.subheader("1. Real-World Fixture")
+
+f1, f2 = st.columns(2)
+
+with f1:
+    home_team_input = st.text_input(
+        "Home team",
+        placeholder="e.g. Arsenal",
     )
 
-with environment_col2:
-
-    pitch = st.selectbox(
-        "Pitch condition",
-        [
-            "Excellent",
-            "Good",
-            "Average",
-            "Poor",
-        ],
-        index=1
+with f2:
+    away_team_input = st.text_input(
+        "Away team",
+        placeholder="e.g. Chelsea",
     )
 
+f3, f4 = st.columns(2)
 
-# ============================================================
-# RUN BUTTON
-# ============================================================
+with f3:
+    match_date = st.date_input(
+        "Match date",
+        value=date.today() + timedelta(days=1),
+    )
 
-st.divider()
+with f4:
+    competition_hint = st.text_input(
+        "Competition / league hint (optional)",
+        placeholder="e.g. Premier League",
+    )
 
-run_prediction = st.button(
-    "RUN MATCHLAB V2",
+advanced_col1, advanced_col2 = st.columns(2)
+
+with advanced_col1:
+    max_goals = st.slider(
+        "Maximum score matrix goals",
+        5,
+        12,
+        9,
+    )
+
+with advanced_col2:
+    simulations = st.selectbox(
+        "Monte Carlo simulations",
+        [5000, 10000, 25000],
+        index=1,
+    )
+
+# ------------------------------------------------------------
+# Run analysis
+# ------------------------------------------------------------
+
+analyze = st.button(
+    "ANALYZE FIXTURE",
     type="primary",
-    use_container_width=True
+    use_container_width=True,
 )
 
-
-if run_prediction:
-
-    # --------------------------------------------------------
-    # Parse form
-    # --------------------------------------------------------
-
-    try:
-
-        parsed_home_form = parse_form(
-            home_form_text
-        )
-
-        parsed_away_form = parse_form(
-            away_form_text
-        )
-
-    except ValueError as error:
-
-        st.error(
-            f"Form input error: {error}"
-        )
-
+if analyze:
+    if not home_team_input.strip() or not away_team_input.strip():
+        st.error("Enter both teams.")
         st.stop()
 
+    if norm(home_team_input) == norm(away_team_input):
+        st.error("Home and away teams must be different.")
+        st.stop()
 
-    # --------------------------------------------------------
-    # Context multipliers
-    # --------------------------------------------------------
-
-    (
-        home_attack_context,
-        home_defence_context
-    ) = team_context_multiplier(
-        formation=home_formation,
-        motivation=home_motivation,
-        absence_count=home_absences,
-        absence_importance=home_absence_importance,
-        absence_type=home_absence_type,
-        form_entries=parsed_home_form,
-        form_weight=(
-            form_weight
-            * home_form_weight
-            / 100.0
-        ),
-        rest_days=home_rest_days,
-        match_stage=match_stage,
-        aggregate_for=aggregate_home,
-        aggregate_against=aggregate_away,
-    )
-
-
-    (
-        away_attack_context,
-        away_defence_context
-    ) = team_context_multiplier(
-        formation=away_formation,
-        motivation=away_motivation,
-        absence_count=away_absences,
-        absence_importance=away_absence_importance,
-        absence_type=away_absence_type,
-        form_entries=parsed_away_form,
-        form_weight=(
-            form_weight
-            * away_form_weight
-            / 100.0
-        ),
-        rest_days=away_rest_days,
-        match_stage=match_stage,
-        aggregate_for=aggregate_away,
-        aggregate_against=aggregate_home,
-    )
-
-
-    # --------------------------------------------------------
-    # Expected goals
-    # --------------------------------------------------------
-
-    home_xg, away_xg = predict_expected_goals(
-        home_key=home_key,
-        away_key=away_key,
-        venue=venue,
-        model=history_model,
-        home_attack_context=home_attack_context,
-        home_defence_context=home_defence_context,
-        away_attack_context=away_attack_context,
-        away_defence_context=away_defence_context,
-        weather=weather,
-        pitch=pitch,
-    )
-
-
-    # --------------------------------------------------------
-    # Exact probability matrix
-    # --------------------------------------------------------
-
-    matrix_result = calculate_matrix(
-        home_xg=home_xg,
-        away_xg=away_xg,
-        max_goals=max_goals,
-        rho=-0.05
-    )
-
-
-    # --------------------------------------------------------
-    # Monte Carlo
-    # --------------------------------------------------------
-
-    simulation_result = run_monte_carlo(
-        home_xg=home_xg,
-        away_xg=away_xg,
-        n_sims=int(simulation_count),
-        seed=int(random_seed)
-    )
-
-
-    # ---------------
-        # --------------------------------------------------------
-    # Data coverage
-    # --------------------------------------------------------
-
-    coverage_score, coverage_level = data_coverage_score(
-        history_model=history_model,
-        home_key=home_key,
-        away_key=away_key,
-        home_form=parsed_home_form,
-        away_form=parsed_away_form,
-        home_lineup=home_lineup_notes,
-        away_lineup=away_lineup_notes,
-        venue=venue,
-        weather=weather,
-        pitch=pitch,
-    )
-
-    # --------------------------------------------------------
-    # Main result
-    # --------------------------------------------------------
-
-    st.success("MATCHLAB V2 prediction completed.")
-
-    if history_model is not None:
-        st.info(
-            "Historical-data model active. "
-            "Team strengths are estimated from the uploaded "
-            "dataset using recency weighting and sample-size shrinkage."
-        )
-    else:
-        st.warning(
-            "No historical CSV was uploaded. "
-            "The prediction is using MATCHLAB's built-in illustrative ratings."
-        )
-
-    # --------------------------------------------------------
-    # Expected goals
-    # --------------------------------------------------------
-
-    st.subheader("4. Expected Goals")
-
-    xg1, xg2, xg3 = st.columns(3)
-
-    with xg1:
-        st.metric(
-            home_team,
-            f"{home_xg:.2f} xG"
-        )
-
-    with xg2:
-        st.metric(
-            "Total xG",
-            f"{home_xg + away_xg:.2f}"
-        )
-
-    with xg3:
-        st.metric(
-            away_team,
-            f"{away_xg:.2f} xG"
-        )
-
-    # --------------------------------------------------------
-    # 1X2 probabilities
-    # --------------------------------------------------------
-
-    st.subheader("5. Match Result Probability")
-
-    r1, r2, r3 = st.columns(3)
-
-    with r1:
-        st.metric(
-            f"{home_team} Win",
-            format_percent(
-                matrix_result["home_win"]
+    with st.spinner("Identifying fixture and collecting football data..."):
+        try:
+            fixture, home_team, away_team = find_fixture(
+                home_team_input.strip(),
+                away_team_input.strip(),
+                match_date,
             )
+        except Exception as error:
+            st.error(f"Fixture identification failed: {error}")
+            st.stop()
+
+        fixture_id = fixture.get("fixture", {}).get("id")
+
+        try:
+            home_fixtures = api.team_fixtures(
+                home_team["id"],
+                last=15,
+            )
+            away_fixtures = api.team_fixtures(
+                away_team["id"],
+                last=15,
+            )
+
+            home_profile = build_recent_team_profile(
+                home_fixtures,
+                home_team["id"],
+            )
+            away_profile = build_recent_team_profile(
+                away_fixtures,
+                away_team["id"],
+            )
+
+            h2h = api.head_to_head(
+                home_team["id"],
+                away_team["id"],
+                last=10,
+            )
+
+            injuries_home = api.injuries(
+                fixture_id=fixture_id,
+            )
+            injuries_away = injuries_home
+
+            # Split fixture injury response by team.
+            injuries_home = [
+                x for x in injuries_home
+                if x.get("team", {}).get("id") == home_team["id"]
+            ]
+            injuries_away = [
+                x for x in api.injuries(fixture_id=fixture_id)
+                if x.get("team", {}).get("id") == away_team["id"]
+            ]
+
+            try:
+                lineups = api.lineups(fixture_id)
+            except Exception:
+                lineups = []
+
+        except Exception as error:
+            st.error(f"Data collection failed: {error}")
+            st.stop()
+
+    # --------------------------------------------------------
+    # Optional web research
+    # --------------------------------------------------------
+web_research = None
+
+    if TAVILY_API_KEY or SERPER_API_KEY:
+        with st.spinner("Checking relevant web information..."):
+            query = (
+                f"{home_team['name']} vs {away_team['name']} "
+                f"{match_date.isoformat()} football injuries lineup news"
+            )
+            try:
+                web_research = web_search(query, max_results=5)
+            except Exception as error:
+                st.warning(f"Web research was unavailable: {error}")
+
+    # --------------------------------------------------------
+    # Infer venue
+    # --------------------------------------------------------
+
+    venue_name = (
+        fixture.get("fixture", {})
+        .get("venue", {})
+        .get("name")
+        or "Unknown venue"
+    )
+
+    # --------------------------------------------------------
+    # Context from actual fixture
+    # --------------------------------------------------------
+
+    home_context = context_multiplier(
+        formation="4-3-3",
+        motivation="Normal",
+        absences=len(injuries_home),
+        absence_type="Mixed",
+        absence_importance=50,
+        profile=home_profile,
+        rest_days=5,
+        aggregate_for=0,
+        aggregate_against=0,
+        second_leg=False,
+    )
+
+    away_context = context_multiplier(
+        formation="4-3-3",
+        motivation="Normal",
+        absences=len(injuries_away),
+        absence_type="Mixed",
+        absence_importance=50,
+        profile=away_profile,
+        rest_days=5,
+        aggregate_for=0,
+        aggregate_against=0,
+        second_leg=False,
+    )
+
+    home_xg, away_xg = predict_xg(
+        home_profile,
+        away_profile,
+        home_context,
+        away_context,
+        "Home team venue",
+        "Clear",
+        "Good",
+    )
+
+    matrix = calculate_matrix(
+        home_xg,
+        away_xg,
+        max_goals=max_goals,
+        rho=-0.05,
+    )
+
+    simulation = run_monte_carlo(
+        home_xg,
+        away_xg,
+        simulations,
+        seed=42,
+    )
+
+    # --------------------------------------------------------
+    # Result
+    # --------------------------------------------------------
+
+    st.success(
+        f"Fixture identified: {home_team['name']} vs {away_team['name']}"
+    )
+
+    meta1, meta2, meta3 = st.columns(3)
+
+    with meta1:
+        st.metric(
+            "Competition",
+            fixture.get("league", {}).get("name", "Unknown"),
         )
 
-    with r2:
+    with meta2:
+        st.metric(
+            "Venue",
+            venue_name,
+        )
+
+    with meta3:
+        st.metric(
+            "Fixture ID",
+            str(fixture_id),
+        )
+
+    # --------------------------------------------------------
+    # Main prediction
+    # --------------------------------------------------------
+
+    st.subheader("2. MATCHLAB Prediction")
+
+    probs = {
+        home_team["name"]: matrix["home_win"],
+        "Draw": matrix["draw"],
+        away_team["name"]: matrix["away_win"],
+    }
+
+    predicted_outcome = max(
+        probs,
+        key=probs.get,
+    )
+
+    top_score = matrix["top_scores"][0]
+
+    p1, p2, p3 = st.columns(3)
+
+    with p1:
+        st.metric(
+            home_team["name"],
+            pct(matrix["home_win"]),
+        )
+
+    with p2:
         st.metric(
             "Draw",
-            format_percent(
-                matrix_result["draw"]
-            )
+            pct(matrix["draw"]),
         )
 
-    with r3:
+    with p3:
         st.metric(
-            f"{away_team} Win",
-            format_percent(
-                matrix_result["away_win"]
-            )
+            away_team["name"],
+            pct(matrix["away_win"]),
+        )
+
+    x1, x2, x3 = st.columns(3)
+
+    with x1:
+        st.metric(
+            f"{home_team['name']} xG",
+            f"{home_xg:.2f}",
+        )
+
+    with x2:
+        st.metric(
+            "Total xG",
+            f"{home_xg + away_xg:.2f}",
+        )
+
+    with x3:
+        st.metric(
+            f"{away_team['name']} xG",
+            f"{away_xg:.2f}",
+        )
+
+    st.markdown(
+        f"### Most likely outcome: **{predicted_outcome}**"
+    )
+
+    st.markdown(
+        f"Most likely exact score: **{top_score[0]}-{top_score[1]}** "
+        f"({top_score[2] * 100:.2f}%)"
+    )
+    # --------------------------------------------------------
+    # Why MATCHLAB produced the result
+    # --------------------------------------------------------
+
+    reasons, risks = build_explanation(
+        home_team["name"],
+        away_team["name"],
+        home_profile,
+        away_profile,
+        home_xg,
+        away_xg,
+        matrix,
+        injuries_home,
+        injuries_away,
+        h2h,
+        home_context,
+        away_context,
+    )
+
+    st.subheader("3. Why MATCHLAB Produced This Result")
+
+    for index, reason in enumerate(reasons, start=1):
+        st.markdown(
+            f"<div class='reason'><b>{index}.</b> {reason}</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.subheader("4. Why Other Outcomes Could Still Happen")
+
+    for index, risk in enumerate(risks, start=1):
+        st.markdown(
+            f"<div class='reason'><b>{index}.</b> {risk}</div>",
+            unsafe_allow_html=True,
         )
 
     # --------------------------------------------------------
-    # Monte Carlo
+    # Recent form evidence
     # --------------------------------------------------------
 
-    st.markdown("### Monte Carlo Simulation")
+    st.subheader("5. Recent Evidence")
 
-    mc1, mc2, mc3 = st.columns(3)
-
-    with mc1:
-        st.metric(
-            "MC Home Win",
-            format_percent(
-                simulation_result["home_win"]
-            )
-        )
-
-    with mc2:
-        st.metric(
-            "MC Draw",
-            format_percent(
-                simulation_result["draw"]
-            )
-        )
-
-    with mc3:
-        st.metric(
-            "MC Away Win",
-            format_percent(
-                simulation_result["away_win"]
-            )
-        )
-
-    agreement = max(
-        abs(
-            matrix_result[key]
-            - simulation_result[key]
-        )
-        for key in [
-            "home_win",
-            "draw",
-            "away_win"
+    evidence_df = pd.DataFrame(
+        [
+            {
+                "Metric": "Recent matches",
+                home_team["name"]: home_profile["matches"],
+                away_team["name"]: away_profile["matches"],
+            },
+            {
+                "Metric": "Weighted goals scored",
+                home_team["name"]: round(home_profile["gf"], 2),
+                away_team["name"]: round(away_profile["gf"], 2),
+            },
+            {
+                "Metric": "Weighted goals conceded",
+                home_team["name"]: round(home_profile["ga"], 2),
+                away_team["name"]: round(away_profile["ga"], 2),
+            },
+            {
+                "Metric": "Weighted points per match",
+                home_team["name"]: round(home_profile["points"], 2),
+                away_team["name"]: round(away_profile["points"], 2),
+            },
+            {
+                "Metric": "Home/Away scoring rate",
+                home_team["name"]: round(home_profile["home_gf"], 2),
+                away_team["name"]: round(away_profile["away_gf"], 2),
+            },
+            {
+                "Metric": "Home/Away conceded rate",
+                home_team["name"]: round(home_profile["home_ga"], 2),
+                away_team["name"]: round(away_profile["away_ga"], 2),
+            },
         ]
     )
 
-    st.caption(
-        f"Exact vs Monte Carlo maximum difference: "
-        f"{agreement * 100:.2f} percentage points."
+    st.dataframe(
+        evidence_df,
+        use_container_width=True,
+        hide_index=True,
     )
 
     # --------------------------------------------------------
+    # Injury / lineup evidence
+    # --------------------------------------------------------
+
+    st.subheader("6. Availability")
+
+    availability_rows = []
+
+    for item in injuries_home:
+        player = item.get("player", {}).get("name", "Unknown")
+        reason = item.get("player", {}).get("reason", "Unknown")
+        availability_rows.append({
+            "Team": home_team["name"],
+            "Player": player,
+            "Type": item.get("type", ""),
+            "Reason": reason,
+        })
+
+    for item in injuries_away:
+        player = item.get("player", {}).get("name", "Unknown")
+        reason = item.get("player", {}).get("reason", "Unknown")
+        availability_rows.append({
+            "Team": away_team["name"],
+            "Player": player,
+            "Type": item.get("type", ""),
+            "Reason": reason,
+        })
+
+    if availability_rows:
+        st.dataframe(
+            pd.DataFrame(availability_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No fixture-specific availability issues were returned by the provider.")
+
+    if lineups:
+        lineup_rows = []
+        for block in lineups:
+            team = block.get("team", {}).get("name", "Unknown")
+            formation = block.get("formation") or "Unknown"
+            lineup_rows.append({
+                "Team": team,
+                "Formation": formation,
+                "Starting XI": len(block.get("startXI", [])),
+                "Substitutes": len(block.get("substitutes", [])),
+            })
+
+        st.dataframe(
+            pd.DataFrame(lineup_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.caption("Confirmed lineups are not yet available or not covered for this fixture.")
+# --------------------------------------------------------
     # Goal markets
     # --------------------------------------------------------
 
-    st.subheader("6. Goal Markets")
-
-    g1, g2, g3, g4 = st.columns(4)
-
-    with g1:
-        st.metric(
-            "Over 1.5",
-            format_percent(
-                matrix_result["over_15"]
-            )
-        )
-
-    with g2:
-        st.metric(
-            "Over 2.5",
-            format_percent(
-                matrix_result["over_25"]
-            )
-        )
-
-    with g3:
-        st.metric(
-            "Over 3.5",
-            format_percent(
-                matrix_result["over_35"]
-            )
-        )
-
-    with g4:
-        st.metric(
-            "BTTS",
-            format_percent(
-                matrix_result["btts_yes"]
-            )
-        )
-
-    market_rows = [
-        ["Over 0.5", matrix_result["over_05"]],
-        ["Under 0.5", matrix_result["under_05"]],
-        ["Over 1.5", matrix_result["over_15"]],
-        ["Under 1.5", matrix_result["under_15"]],
-        ["Over 2.5", matrix_result["over_25"]],
-        ["Under 2.5", matrix_result["under_25"]],
-        ["Over 3.5", matrix_result["over_35"]],
-        ["Under 3.5", matrix_result["under_35"]],
-        ["Over 4.5", matrix_result["over_45"]],
-        ["Under 4.5", matrix_result["under_45"]],
-        ["BTTS Yes", matrix_result["btts_yes"]],
-        ["BTTS No", matrix_result["btts_no"]],
-        [
-            f"{home_team} Clean Sheet",
-            matrix_result["home_clean_sheet"]
-        ],
-        [
-            f"{away_team} Clean Sheet",
-            matrix_result["away_clean_sheet"]
-        ],
-        [
-            "Home or Draw",
-            matrix_result["home_or_draw"]
-        ],
-        [
-            "Draw or Away",
-            matrix_result["draw_or_away"]
-        ],
-        [
-            "Home or Away",
-            matrix_result["home_or_away"]
-        ],
-    ]
+    st.subheader("8. Goal Markets")
 
     market_df = pd.DataFrame(
-        market_rows,
-        columns=[
-            "Market",
-            "Probability"
-        ]
-    )
-
-    market_df["Probability"] = market_df[
-        "Probability"
-    ].apply(
-        lambda x: f"{x * 100:.1f}%"
+        [
+            ["Over 1.5", pct(matrix["over_15"])],
+            ["Under 1.5", pct(matrix["under_15"])],
+            ["Over 2.5", pct(matrix["over_25"])],
+            ["Under 2.5", pct(matrix["under_25"])],
+            ["Over 3.5", pct(matrix["over_35"])],
+            ["Under 3.5", pct(matrix["under_35"])],
+            ["BTTS Yes", pct(matrix["btts_yes"])],
+            ["BTTS No", pct(matrix["btts_no"])],
+            ["Home Clean Sheet", pct(matrix["home_clean_sheet"])],
+            ["Away Clean Sheet", pct(matrix["away_clean_sheet"])],
+        ],
+        columns=["Market", "Probability"],
     )
 
     st.dataframe(
         market_df,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
     # --------------------------------------------------------
     # Correct scores
     # --------------------------------------------------------
 
-    st.subheader("7. Most Likely Correct Scores")
-
-    score_rows = []
-
-    for (
-        hg,
-        ag,
-        probability
-    ) in matrix_result["top_scores"][:10]:
-
-        score_rows.append(
-            {
-                "Score": f"{hg}-{ag}",
-                "Probability": (
-                    f"{probability * 100:.2f}%"
-                )
-            }
-        )
+    st.subheader("9. Correct Score Distribution")
 
     score_df = pd.DataFrame(
-        score_rows
+        [
+            {
+                "Score": f"{hg}-{ag}",
+                "Probability": pct(probability),
+            }
+            for hg, ag, probability in matrix["top_scores"][:10]
+        ]
     )
 
     st.dataframe(
         score_df,
         use_container_width=True,
-        hide_index=True
-    )
-
-    best_score = matrix_result[
-        "top_scores"
-    ][0]
-
-    # --------------------------------------------------------
-    # Prediction summary
-    # --------------------------------------------------------
-
-    st.subheader("8. Prediction Summary")
-
-    outcomes = {
-        home_team: matrix_result["home_win"],
-        "Draw": matrix_result["draw"],
-        away_team: matrix_result["away_win"],
-    }
-
-    predicted_outcome = max(
-        outcomes,
-        key=outcomes.get
-    )
-
-    predicted_probability = outcomes[
-        predicted_outcome
-    ]
-
-    score_string = (
-        f"{best_score[0]}-{best_score[1]}"
-    )
-
-    st.markdown(
-        f"""
-### Most likely outcome: **{predicted_outcome}**
-
-**Probability:** {predicted_probability * 100:.1f}%
-
-**Most likely score:** **{score_string}**
-
-**Expected goals:**  
-{home_team}: **{home_xg:.2f}**  
-{away_team}: **{away_xg:.2f}**
-"""
+        hide_index=True,
     )
 
     # --------------------------------------------------------
-    # Double chance
+    # Optional web research report
     # --------------------------------------------------------
 
-    st.subheader("9. Double Chance")
+    if web_research:
+        st.subheader("10. Internet Research")
 
-    dc1, dc2, dc3 = st.columns(3)
+        if web_research.get("answer"):
+            st.write(web_research["answer"])
 
-    with dc1:
-        st.metric(
-            "1X",
-            format_percent(
-                matrix_result["home_or_draw"]
-            )
-        )
+        for result in web_research.get("results", [])[:5]:
+            title = result.get("title", "Source")
+            url = result.get("url", "")
+            content = result.get("content", result.get("snippet", ""))
 
-    with dc2:
-        st.metric(
-            "X2",
-            format_percent(
-                matrix_result["draw_or_away"]
-            )
-        )
+            if url:
+                st.markdown(f"**{title}**")
+                st.write(content[:700])
+                st.caption(url)
 
-    with dc3:
-        st.metric(
-            "12",
-            format_percent(
-                matrix_result["home_or_away"]
-            )
+        st.caption(
+            "Web research is supporting evidence. It does not directly overwrite the probability model."
         )
 
     # --------------------------------------------------------
-    # Data coverage
+    # Odds AFTER model
     # --------------------------------------------------------
 
-    st.subheader("10. Model Data Coverage")
-
-    d1, d2, d3 = st.columns(3)
-
-    with d1:
-        st.metric(
-            "Coverage",
-            f"{coverage_score}/100"
-        )
-
-    with d2:
-        st.metric(
-            "Coverage Level",
-            coverage_level
-        )
-
-    with d3:
-
-        if history_model is not None:
-            st.metric(
-                "Historical Matches",
-                f"{history_model['rows']:,}"
-            )
-        else:
-            st.metric(
-                "Historical Matches",
-                "0"
-            )
-
-    if history_model is not None:
-
-        if history_model["using_xg"]:
-
-            st.success(
-                "Historical model is using xG data."
-            )
-
-        else:
-
-            st.info(
-                "Historical model is using actual match goals."
-            )
-
-        if history_model["latest_date"]:
-
-            st.caption(
-                "Latest historical match: "
-                f"{history_model['latest_date']}"
-            )
-
-    else:
-
-        st.warning(
-            "For stronger predictions, upload a historical "
-            "CSV containing previous matches."
-        )
-
-    # --------------------------------------------------------
-    # Context summary
-    # --------------------------------------------------------
-
-    st.subheader("11. Match Context Used")
-
-    context_rows = [
-        ["Competition", competition],
-        [
-            "Season",
-            (
-                custom_season
-                if (
-                    season_choice == "Other / Custom"
-                    and custom_season
-                )
-                else season_choice
-            )
-        ],
-        ["Stage", match_stage],
-        ["Venue", venue],
-        ["Weather", weather],
-        ["Pitch", pitch],
-        [
-            f"{home_team} Formation",
-            home_formation
-        ],
-        [
-            f"{away_team} Formation",
-            away_formation
-        ],
-        [
-            f"{home_team} Motivation",
-            home_motivation
-        ],
-        [
-            f"{away_team} Motivation",
-            away_motivation
-        ],
-        [
-            f"{home_team} Absences",
-            (
-                f"{home_absences} "
-                f"({home_absence_type})"
-            )
-        ],
-        [
-            f"{away_team} Absences",
-            (
-                f"{away_absences} "
-                f"({away_absence_type})"
-            )
-        ],
-        [
-            f"{home_team} Rest",
-            f"{home_rest_days} days"
-        ],
-        [
-            f"{away_team} Rest",
-            f"{away_rest_days} days"
-        ],
-    ]
-
-    context_df = pd.DataFrame(
-        context_rows,
-        columns=[
-            "Factor",
-            "Value"
-        ]
-    )
-
-    st.dataframe(
-        context_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # --------------------------------------------------------
-    # Technical details
-    # --------------------------------------------------------
-
-    with st.expander(
-        "Technical Model Details"
-    ):
-
-        technical_df = pd.DataFrame(
-            [
-                [
-                    "Home attack context",
-                    f"{home_attack_context:.3f}"
-                ],
-                [
-                    "Home defence context",
-                    f"{home_defence_context:.3f}"
-                ],
-                [
-                    "Away attack context",
-                    f"{away_attack_context:.3f}"
-                ],
-                [
-                    "Away defence context",
-                    f"{away_defence_context:.3f}"
-                ],
-                [
-                    "Dixon-Coles rho",
-                    "-0.05"
-                ],
-                [
-                    "Score matrix maximum",
-                    str(max_goals)
-                ],
-                [
-                    "Monte Carlo samples",
-                    f"{simulation_count:,}"
-                ],
-                [
-                    "Random seed",
-                    str(random_seed)
-                ],
-            ],
-            columns=[
-                "Parameter",
-                "Value"
-            ]
-        )
-
-        st.dataframe(
-            technical_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # --------------------------------------------------------
-    # Prediction JSON
-    # --------------------------------------------------------
-
-    prediction_export = {
-        "model": "MATCHLAB Pro V2",
-
-        "home_team": home_team,
-        "away_team": away_team,
-
-        "competition": competition,
-
-        "season": (
-            custom_season
-            if (
-                season_choice == "Other / Custom"
-                and custom_season
-            )
-            else season_choice
-        ),
-
-        "stage": match_stage,
-
-        "venue": venue,
-
-        "expected_goals": {
-            "home": round(
-                home_xg,
-                4
-            ),
-            "away": round(
-                away_xg,
-                4
-            ),
-        },
-
-        "result_probability": {
-            "home_win": round(
-                matrix_result["home_win"],
-                6
-            ),
-            "draw": round(
-                matrix_result["draw"],
-                6
-            ),
-            "away_win": round(
-                matrix_result["away_win"],
-                6
-            ),
-        },
-
-        "goal_probability": {
-            "over_1_5": round(
-                matrix_result["over_15"],
-                6
-            ),
-            "over_2_5": round(
-                matrix_result["over_25"],
-                6
-            ),
-            "over_3_5": round(
-                matrix_result["over_35"],
-                6
-            ),
-            "btts_yes": round(
-                matrix_result["btts_yes"],
-                6
-            ),
-        },
-
-        "most_likely_score": {
-            "home_goals": best_score[0],
-            "away_goals": best_score[1],
-            "probability": round(
-                best_score[2],
-                6
-            ),
-        },
-
-        "data_coverage": {
-            "score": coverage_score,
-            "level": coverage_level,
-        },
-
-        "monte_carlo": {
-            "samples": simulation_result[
-                "samples"
-            ],
-
-            "home_win": round(
-                simulation_result["home_win"],
-                6
-            ),
-
-            "draw": round(
-                simulation_result["draw"],
-                6
-            ),
-
-            "away_win": round(
-                simulation_result["away_win"],
-                6
-            ),
-        },
-    }
-
-    st.download_button(
-        "Download Prediction JSON",
-        data=json.dumps(
-            prediction_export,
-            indent=2
-        ),
-        file_name=(
-            f"matchlab_"
-            f"{home_key}_vs_"
-            f"{away_key}.json"
-        ),
-        mime="application/json",
-        use_container_width=True
-    )
-
-    # --------------------------------------------------------
-    # Important notice
-    # --------------------------------------------------------
-
-    st.warning(
-        "MATCHLAB Pro produces probability estimates, not "
-        "guaranteed football results. It does not automatically "
-        "verify live injuries, confirmed starting lineups, "
-        "bookmaker odds, weather feeds, or real-time match data."
-    )
+    st.subheader("11. Optional Market Value Check")
 
     st.caption(
-        "MATCHLAB Pro V2 · Historical strength + form + "
-        "context + Dixon-Coles probability matrix + Monte Carlo"
+        "Odds are deliberately checked only after MATCHLAB has produced its own probabilities. "
+        "They do not feed back into the prediction."
     )
+
+    odds_rows = []
+
+    try:
+        odds_response = api.odds(fixture_id)
+        odds_rows = parse_odds_response(odds_response)
+    except Exception as error:
+        st.caption(f"Market odds unavailable: {error}")
+
+    value_rows = value_analysis(
+        matrix,
+        odds_rows,
+        home_team["name"],
+        away_team["name"],
+    )
+
+    if value_rows:
+        value_df = pd.DataFrame(value_rows)
+        value_df["Model Probability"] = value_df[
+            "Model Probability"
+        ].map(pct)
+        value_df["Market Probability"] = value_df[
+            "Market Probability"
+        ].map(pct)
+        value_df["Edge"] = value_df["Edge"].map(pct)
+        value_df["Model Fair Odds"] = value_df[
+            "Model Fair Odds"
+        ].map(lambda x: f"{x:.2f}")
+        value_df["Best Odds"] = value_df[
+            "Best Odds"
+        ].map(lambda x: f"{x:.2f}" if x else "-")
+
+        st.dataframe(
+            value_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        positives = [
+            row for row in value_rows
+            if row["Potential Value"]
+        ]
+
+        if positives:
+            for row in positives:
+                st.markdown(
+                    f"<div class='value-box'><b>Potential value:</b> "
+                    f"{row['Outcome']} · model {pct(row['Model Probability'])} · "
+                    f"market {pct(row['Market Probability'])} · "
+                    f"edge {pct(row['Edge'])} · "
+                    f"odds {row['Best Odds']:.2f}</div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No qualifying model-vs-market edge was detected under the current threshold.")
+
+    else:
+        st.info(
+            "No usable 1X2 bookmaker odds were returned. "
+            "The prediction remains independent of market prices."
+    )
+        # --------------------------------------------------------
+    # Confidence / coverage
+    # --------------------------------------------------------
+
+    score, level = coverage_score(
+        home_profile,
+        away_profile,
+        fixture,
+        injuries_home,
+        injuries_away,
+        h2h,
+    )
+
+    st.subheader("12. Data Coverage")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.metric("Coverage", f"{score}/100")
+
+    with c2:
+        st.metric("Level", level)
+
+    with c3:
+        st.metric("Historical sample", f"{home_profile['matches'] + away_profile['matches']}")
+
+    st.caption(
+        "Coverage is a measure of how much relevant information MATCHLAB obtained; "
+        "it is not a guarantee that the prediction will be correct."
+    )
+
+    # --------------------------------------------------------
+    # Save prediction
+    # --------------------------------------------------------
+
+    model_source = "API-Football structured data + MATCHLAB model"
+
+    record = {
+        "fixture_id": fixture_id,
+        "match_date": fixture.get("fixture", {}).get("date"),
+        "competition": fixture.get("league", {}).get("name", ""),
+        "home_team": home_team["name"],
+        "away_team": away_team["name"],
+        "home_probability": matrix["home_win"],
+        "draw_probability": matrix["draw"],
+        "away_probability": matrix["away_win"],
+        "home_xg": home_xg,
+        "away_xg": away_xg,
+        "predicted_outcome": predicted_outcome,
+        "predicted_score": f"{top_score[0]}-{top_score[1]}",
+        "confidence_score": score,
+        "model_source": model_source,
+        "value_summary": (
+            "Potential value detected"
+            if value_rows and any(x["Potential Value"] for x in value_rows)
+            else "No qualifying value detected"
+        ),
+        "reasons": reasons,
+    }
+
+    if st.button("SAVE THIS PREDICTION", type="secondary", use_container_width=True):
+        save_prediction(record)
+        st.success(
+            "Prediction saved. Open Prediction History from the sidebar to review it later."
+        )
+
+    # --------------------------------------------------------
+    # Final model statement
+    # --------------------------------------------------------
+
+    st.divider()
+
+    st.markdown(
+        f"### MATCHLAB final assessment: {predicted_outcome}"
+    )
+
+    st.write(
+        f"MATCHLAB gives {predicted_outcome} the highest model probability "
+        f"at {pct(probs[predicted_outcome])}. The model's estimated scoring environment "
+        f"is {home_xg:.2f}–{away_xg:.2f} xG. The main reasons above explain the direction; "
+        f"the counterarguments explain why the other outcomes remain possible."
+    )
+
+    st.warning(
+        "This is a probabilistic football model, not a guarantee. Data coverage varies by competition, "
+        "and some injury, lineup and statistical fields may be missing or delayed."
+    )
+    
+  
