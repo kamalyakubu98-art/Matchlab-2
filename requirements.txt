@@ -1,5 +1,3 @@
-streamlit
-pandas
-opencv-python-headless
-easyocr
-scikit-learn
+streamlit>=1.40
+pandas>=2.0
+requests>=2.31
