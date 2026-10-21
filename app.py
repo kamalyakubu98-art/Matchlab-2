@@ -86,7 +86,7 @@ league_df = pd.DataFrame(historical_teams_data)
 AUTOMATED_RESEARCH_DB = {
     "default": {
         "weather_val": 1.00, "weather_txt": "Clear Sky / Standard Ambient Air (1.00x Base)", "pitch_val": 1.00, "pitch_name": "Standard Hybrid Turf Setup",
-        "travel_km": 450, "ref_strict": 0.55, "motivation_delta": 0.05, "stadium_cap": 90,
+        "travel_km": 280, "ref_strict": 0.55, "motivation_delta": 0.05, "stadium_cap": 90,
         "opening_h": 2.10, "opening_d": 3.40, "opening_a": 3.20, "closing_h": 2.15, "closing_d": 3.35, "closing_a": 3.25, "has_closing": True,
         "ref_name": "Standard Assigned Referee", "avg_cards": 3.80, "base_corners": 10.2, "base_sot": 8.8
     },
@@ -183,19 +183,19 @@ if parsed_text_list:
                 squad_integrity_coef -= 0.12
                 ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
 
-# Process Machine Learning Weights
+# FIXED: Nested array structure double brackets [[ ... ]] inside DataFrame initialization enforces exact 2D shape formatting
 live_input_df = pd.DataFrame(
-    [[ctx["weather_val"], ctx["pitch_val"], fatigue_val, ctx["ref_strict"], ctx["motivation_delta"], squad_integrity_coef]],
+    [[float(ctx["weather_val"]), float(ctx["pitch_val"]), float(fatigue_val), float(ctx["ref_strict"]), float(ctx["motivation_delta"]), float(squad_integrity_coef)]],
     columns=feature_columns
 )
 live_input_scaled = scaler.transform(live_input_df)
 
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled))
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled))
+ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
+ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
 def get_team_metrics(name, role):
     match_row = league_df[league_df["Team"] == name.lower()]
-    if not match_row.empty: return float(match_row[role].values)
+    if not match_row.empty: return float(match_row[role].values[0])
     return 1.75 if role == "Attack_Rating" else 1.15
 
 att_h = get_team_metrics(home_team, "Attack_Rating")
@@ -204,9 +204,5 @@ att_a = get_team_metrics(away_team, "Attack_Rating")
 def_h = get_team_metrics(home_team, "Defense_Rating")
 
 match_row_adv = league_df[league_df["Team"] == home_team.lower()]
-home_adv = float(match_row_adv["Home_Advantage"].values) if not match_row_adv.empty else 0.20
+home_adv = float(match_row_adv["Home_Advantage"].values[0]) if not match_row_adv.empty else 0.20
 
-final_hxg = max(0.15, (att_h * def_a) + home_adv + (ai_adjustment_h - 1.5))
-final_axg = max(0.15, (att_a * def_h) + (ai_adjustment_a - 1.2))
-
-# --- MAIN AUTOMATED UI LAYOUT DISPLAY ---
