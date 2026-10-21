@@ -76,7 +76,6 @@ historical_teams_data = {
 league_df = pd.DataFrame(historical_teams_data)
 
 # --- 2. THE RESEARCH DATABASE (AUTOMATING OUT THE SLIDERS) ---
-# This dictionary mimics pre-scraped platform entries for upcoming match features
 AUTOMATED_RESEARCH_DB = {
     "Aston Villa vs Manchester City": {
         "weather_val": 1.00, "pitch_val": 1.00, "travel_km": 140, "ref_strict": 0.40, "motivation_delta": 0.15, "stadium_cap": 100,
@@ -149,10 +148,8 @@ if img_buffer is not None:
 ctx = AUTOMATED_RESEARCH_DB[match_selection]
 selected_home, selected_away = match_selection.split(" vs ")
 
-# Handle travel fatigue scaling vectors
 fatigue_val = min(1.5, ctx["travel_km"] / 500.0)
 
-# Evaluate Vision Squad Array
 squad_integrity_coef = 1.0
 ocr_logs_text = []
 if parsed_text_list:
@@ -173,19 +170,23 @@ if parsed_text_list:
 live_input_vector = np.array([[ctx["weather_val"], ctx["pitch_val"], fatigue_val, ctx["ref_strict"], ctx["motivation_delta"], squad_integrity_coef]])
 live_input_scaled = scaler.transform(live_input_vector)
 
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled))
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled))
+ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
+ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
 
-h_row = league_df[league_df["Team"] == selected_home].iloc[0]
-a_row = league_df[league_df["Team"] == selected_away].iloc[0]
+# FIXED ROWS LOOKUP SYNTAX: Safely maps float scalar targets out of selection arrays
+att_h = float(league_df[league_df["Team"] == selected_home]["Attack_Rating"].values[0])
+def_a = float(league_df[league_df["Team"] == selected_away]["Defense_Rating"].values[0])
+home_adv = float(league_df[league_df["Team"] == selected_home]["Home_Advantage"].values[0])
 
-final_hxg = max(0.15, (h_row["Attack_Rating"] * a_row["Defense_Rating"]) + h_row["Home_Advantage"] + (ai_adjustment_h - 1.5))
-final_axg = max(0.15, (a_row["Attack_Rating"] * h_row["Defense_Rating"]) + (ai_adjustment_a - 1.2))
+att_a = float(league_df[league_df["Team"] == selected_away]["Attack_Rating"].values[0])
+def_h = float(league_df[league_df["Team"] == selected_home]["Defense_Rating"].values[0])
+
+final_hxg = max(0.15, (att_h * def_a) + home_adv + (ai_adjustment_h - 1.5))
+final_axg = max(0.15, (att_a * def_h) + (ai_adjustment_a - 1.2))
 
 # --- MAIN AUTOMATED UI DASHBOARD ---
 st.header(f"🏟️ Game Center: {selected_home} vs {selected_away}")
 
-# AI Core Reasoning Dashboard Viewports
 st.header("🧠 AI Core Reasoning Dashboard")
 a_col1, a_col2 = st.columns(2)
 with a_col1:
@@ -205,7 +206,7 @@ with a_col2:
         else:
             st.success("✅ Stable trading line volume profile.")
     else:
-        st.warning("⚠️ **Market Status Check:** [CLOSING ODDS ODDS NOT YET SET / PENDING KICKOFF TIME]. Evaluated using Opening Line baselines.")
+        st.warning("⚠️ **Market Status Check:** [CLOSING ODDS NOT YET SET / PENDING KICKOFF TIME]. Evaluated using Opening Line baselines.")
 
 if ocr_logs_text:
     st.info("### 🔍 Computer Vision Lineup Audit Logs")
@@ -218,6 +219,3 @@ odds_a = ctx["closing_a"] if ctx["has_closing"] else ctx["opening_a"]
 
 result = calculate(final_hxg, final_axg, max_goals, dc_rho)
 
-raw_implied_sum = (1/odds_h) + (1/odds_d) + (1/odds_a)
-market_h = (1/odds_h) / raw_implied_sum
-market_d = (1/odds_d) / raw_implied_sum
