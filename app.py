@@ -1,209 +1,778 @@
 import math
-from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
-import cv2
-import numpy as np
 
-# Core Machine Learning Dependencies
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.preprocessing import StandardScaler
+# ============================================================
+# PAGE CONFIG
+# ============================================================
 
-# Lazy load EasyOCR only when an image is processed to conserve mobile runtime memory
-@st.cache_resource
-def get_ocr_reader():
-    import easyocr
-    return easyocr.Reader(['en'], gpu=False)
+st.set_page_config(
+    page_title="MATCHLAB Pro",
+    page_icon="⚽",
+    layout="wide"
+)
 
-st.set_page_config(page_title="MATCHLAB Pro AI", page_icon="⚽", layout="wide")
-
-# Custom UI CSS Styling Injection for an immersive professional layout
 st.markdown("""
 <style>
-    div[data-testid="stMetricValue"] { font-size: 26px; font-weight: bold; color: #00FFCC; }
-    div[data-testid="stMetricDelta"] { font-size: 15px; }
-    .card-title { font-size: 22px; font-weight: bold; color: #FFFFFF; margin-top: 15px; margin-bottom: 10px; }
-    .highlight-box { padding: 12px; background-color: #1E2638; border-radius: 8px; margin-bottom: 10px; }
-    .league-tag { font-size: 14px; font-weight: bold; color: #FFCC00; background-color: #2D3748; padding: 4px 8px; border-radius: 4px; display: inline-block; margin-top: 4px; }
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 0px;
+    }
+
+    .subtitle {
+        color: #9CA3AF;
+        margin-bottom: 25px;
+    }
+
+    .result-card {
+        background: #151B27;
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 15px;
+    }
+
+    .score {
+        font-size: 32px;
+        font-weight: bold;
+    }
+
+    div[data-testid="stMetricValue"] {
+        font-size: 28px;
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("⚽ MATCHLAB 3.5 Pro (Autonomous Context AI)")
-st.caption("Advanced Machine Learning Core · Zero-Placeholder Metrics · Global Multi-Market Suite")
 
-st.warning("Autonomous Mode Active: Context AI engine is auto-calculating parameters and optimizing distributions.")
+# ============================================================
+# TEAM DATABASE
+#
+# Attack = expected attacking strength
+# Defense = expected goals conceded strength
+# Lower defense value = stronger defense
+# ============================================================
 
-# --- CORE MATH UTILITIES ---
-def poisson_pmf(k, lam):
-    if lam <= 0: return 1.0 if k == 0 else 0.0
-    return math.exp(-lam + k * math.log(lam) - math.lgamma(k + 1))
+TEAM_DATA = {
+    "aston villa": {
+        "name": "Aston Villa",
+        "league": "Premier League",
+        "attack": 1.65,
+        "defense": 1.20,
+        "home_adv": 0.25,
+    },
 
-def dixon_coles_rho(x, y, mu, nu, rho):
-    if x == 0 and y == 0: return 1.0 - mu * nu * rho
-    elif x == 1 and y == 0: return 1.0 + mu * rho
-    elif x == 0 and y == 1: return 1.0 + nu * rho
-    elif x == 1 and y == 1: return 1.0 - rho
-    return 1.0
+    "manchester city": {
+        "name": "Manchester City",
+        "league": "Premier League",
+        "attack": 2.30,
+        "defense": 0.90,
+        "home_adv": 0.30,
+    },
 
-def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
-    max_goals = max(6, min(int(max_goals), 15))
-    scores = {}
-    for h in range(max_goals + 1):
-        for a in range(max_goals + 1):
-            p_home = poisson_pmf(h, home_xg)
-            p_away = poisson_pmf(a, away_xg)
-            adjustment = dixon_coles_rho(h, a, home_xg, away_xg, rho)
-            scores[(h, a)] = p_home * p_away * adjustment
+    "arsenal": {
+        "name": "Arsenal",
+        "league": "Premier League",
+        "attack": 2.10,
+        "defense": 0.85,
+        "home_adv": 0.22,
+    },
 
-    mass = sum(scores.values())
-    if mass > 0: scores = {s: p / mass for s, p in scores.items()}
+    "liverpool": {
+        "name": "Liverpool",
+        "league": "Premier League",
+        "attack": 2.25,
+        "defense": 0.95,
+        "home_adv": 0.35,
+    },
 
-    home_win = sum(p for (h,a),p in scores.items() if h > a)
-    draw = sum(p for (h,a),p in scores.items() if h == a)
-    away_win = sum(p for (h,a),p in scores.items() if h < a)
+    "chelsea": {
+        "name": "Chelsea",
+        "league": "Premier League",
+        "attack": 1.80,
+        "defense": 1.35,
+        "home_adv": 0.15,
+    },
 
-    def over(n): return sum(p for (h,a),p in scores.items() if h+a > n)
-    btts = sum(p for (h,a),p in scores.items() if h > 0 and a > 0)
-    top = sorted(scores.items(), key=lambda kv: kv, reverse=True)[:10]
+    "manchester united": {
+        "name": "Manchester United",
+        "league": "Premier League",
+        "attack": 1.45,
+        "defense": 1.40,
+        "home_adv": 0.10,
+    },
+
+    "real madrid": {
+        "name": "Real Madrid",
+        "league": "La Liga",
+        "attack": 2.40,
+        "defense": 0.88,
+        "home_adv": 0.32,
+    },
+
+    "barcelona": {
+        "name": "Barcelona",
+        "league": "La Liga",
+        "attack": 2.05,
+        "defense": 1.05,
+        "home_adv": 0.28,
+    },
+
+    "bayern munich": {
+        "name": "Bayern Munich",
+        "league": "Bundesliga",
+        "attack": 2.35,
+        "defense": 1.10,
+        "home_adv": 0.30,
+    },
+
+    "inter milan": {
+        "name": "Inter Milan",
+        "league": "Serie A",
+        "attack": 1.95,
+        "defense": 0.80,
+        "home_adv": 0.25,
+    },
+
+    "juventus": {
+        "name": "Juventus",
+        "league": "Serie A",
+        "attack": 1.60,
+        "defense": 0.90,
+        "home_adv": 0.18,
+    },
+
+    "psg": {
+        "name": "PSG",
+        "league": "Ligue 1",
+        "attack": 2.15,
+        "defense": 1.15,
+        "home_adv": 0.20,
+    },
+}
+
+
+# ============================================================
+# DEFAULT VALUES FOR UNKNOWN TEAMS
+# ============================================================
+
+DEFAULT_TEAM = {
+    "name": "Unknown Team",
+    "league": "Unknown",
+    "attack": 1.40,
+    "defense": 1.40,
+    "home_adv": 0.20,
+}
+
+
+# ============================================================
+# MATHEMATICAL FUNCTIONS
+# ============================================================
+
+def poisson_pmf(goals, expected_goals):
+
+    if expected_goals <= 0:
+        return 1.0 if goals == 0 else 0.0
+
+    return (
+        math.exp(-expected_goals)
+        * (expected_goals ** goals)
+        / math.factorial(goals)
+    )
+
+
+def dixon_coles_adjustment(
+    home_goals,
+    away_goals,
+    home_xg,
+    away_xg,
+    rho=-0.05
+):
+
+    if home_goals == 0 and away_goals == 0:
+        adjustment = 1 - (home_xg * away_xg * rho)
+
+    elif home_goals == 0 and away_goals == 1:
+        adjustment = 1 + (home_xg * rho)
+
+    elif home_goals == 1 and away_goals == 0:
+        adjustment = 1 + (away_xg * rho)
+
+    elif home_goals == 1 and away_goals == 1:
+        adjustment = 1 - rho
+
+    else:
+        adjustment = 1.0
+
+    # Prevent invalid negative probability multipliers
+    return max(0.0, adjustment)
+
+
+# ============================================================
+# EXPECTED GOALS MODEL
+# ============================================================
+
+def calculate_expected_goals(
+    home_team,
+    away_team,
+    weather_factor=1.0,
+    home_form=1.0,
+    away_form=1.0,
+):
+
+    home = TEAM_DATA.get(home_team, DEFAULT_TEAM)
+    away = TEAM_DATA.get(away_team, DEFAULT_TEAM)
+
+    # --------------------------------------------------------
+    # Home attack versus away defense
+    # --------------------------------------------------------
+
+    home_xg = (
+        home["attack"]
+        * away["defense"]
+        * home_form
+        * weather_factor
+    )
+
+    # Apply home advantage
+    home_xg += home["home_adv"]
+
+    # --------------------------------------------------------
+    # Away attack versus home defense
+    # --------------------------------------------------------
+
+    away_xg = (
+        away["attack"]
+        * home["defense"]
+        * away_form
+        * weather_factor
+    )
+
+    # Keep predictions within sensible numerical boundaries
+    home_xg = max(0.20, min(home_xg, 4.50))
+    away_xg = max(0.20, min(away_xg, 4.50))
+
+    return home_xg, away_xg
+
+
+# ============================================================
+# SCORE MATRIX
+# ============================================================
+
+def calculate_probabilities(
+    home_xg,
+    away_xg,
+    max_goals=10,
+    rho=-0.05
+):
+
+    probabilities = {}
+
+    for home_goals in range(max_goals + 1):
+
+        for away_goals in range(max_goals + 1):
+
+            home_probability = poisson_pmf(
+                home_goals,
+                home_xg
+            )
+
+            away_probability = poisson_pmf(
+                away_goals,
+                away_xg
+            )
+
+            adjustment = dixon_coles_adjustment(
+                home_goals,
+                away_goals,
+                home_xg,
+                away_xg,
+                rho
+            )
+
+            probability = (
+                home_probability
+                * away_probability
+                * adjustment
+            )
+
+            probabilities[
+                (home_goals, away_goals)
+            ] = probability
+
+    # --------------------------------------------------------
+    # NORMALIZE DISTRIBUTION
+    # --------------------------------------------------------
+
+    total_probability = sum(probabilities.values())
+
+    if total_probability <= 0:
+        raise ValueError(
+            "Probability distribution could not be calculated."
+        )
+
+    probabilities = {
+        score: probability / total_probability
+        for score, probability in probabilities.items()
+    }
+
+    # --------------------------------------------------------
+    # 1X2
+    # --------------------------------------------------------
+
+    home_win = sum(
+        probability
+        for (h, a), probability in probabilities.items()
+        if h > a
+    )
+
+    draw = sum(
+        probability
+        for (h, a), probability in probabilities.items()
+        if h == a
+    )
+
+    away_win = sum(
+        probability
+        for (h, a), probability in probabilities.items()
+        if h < a
+    )
+
+    # --------------------------------------------------------
+    # GOAL MARKETS
+    # --------------------------------------------------------
+
+    over_15 = sum(
+        p for (h, a), p in probabilities.items()
+        if h + a >= 2
+    )
+
+    over_25 = sum(
+        p for (h, a), p in probabilities.items()
+        if h + a >= 3
+    )
+
+    over_35 = sum(
+        p for (h, a), p in probabilities.items()
+        if h + a >= 4
+    )
+
+    btts = sum(
+        p for (h, a), p in probabilities.items()
+        if h > 0 and a > 0
+    )
+
+    # --------------------------------------------------------
+    # CORRECT SCORES
+    #
+    # IMPORTANT:
+    # Sort by probability, not by score tuple.
+    # --------------------------------------------------------
+
+    top_scores = sorted(
+        probabilities.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )[:10]
 
     return {
-        "home_win": home_win, "draw": draw, "away_win": away_win,
-        "over15": over(1), "over25": over(2), "over35": over(3), "btts": btts,
-        "top": [(f"{h}-{a}", p) for (h,a), p in top]
+        "home_win": home_win,
+        "draw": draw,
+        "away_win": away_win,
+        "over_15": over_15,
+        "over_25": over_25,
+        "over_35": over_35,
+        "btts": btts,
+        "top_scores": top_scores,
+        "matrix": probabilities,
     }
 
-# --- 1. HISTORICAL REGISTRY BASELINES & LEAGUE MAPPING DATABASE ---
-historical_teams_data = {
-    "Team": [
-        "aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", 
-        "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"
+
+# ============================================================
+# FAIR ODDS
+# ============================================================
+
+def fair_odds(probability):
+
+    if probability <= 0:
+        return 0
+
+    return 1 / probability
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.title("⚽ Match Input")
+
+home_input = st.sidebar.text_input(
+    "Home Team",
+    "Aston Villa"
+)
+
+away_input = st.sidebar.text_input(
+    "Away Team",
+    "Manchester City"
+)
+
+st.sidebar.divider()
+
+st.sidebar.subheader("Context Adjustments")
+
+home_form = st.sidebar.slider(
+    "Home Form Strength",
+    min_value=0.70,
+    max_value=1.30,
+    value=1.00,
+    step=0.01
+)
+
+away_form = st.sidebar.slider(
+    "Away Form Strength",
+    min_value=0.70,
+    max_value=1.30,
+    value=1.00,
+    step=0.01
+)
+
+weather_factor = st.sidebar.slider(
+    "Weather / Pitch Factor",
+    min_value=0.80,
+    max_value=1.05,
+    value=1.00,
+    step=0.01
+)
+
+
+# ============================================================
+# NORMALIZE INPUT
+# ============================================================
+
+home_key = home_input.strip().lower()
+away_key = away_input.strip().lower()
+
+home_data = TEAM_DATA.get(home_key)
+away_data = TEAM_DATA.get(away_key)
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.markdown(
+    '<div class="main-title">⚽ MATCHLAB 4.0</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    'Statistical Football Probability Engine'
+    '</div>',
+    unsafe_allow_html=True
+)
+
+
+# ============================================================
+# INPUT VALIDATION
+# ============================================================
+
+if not home_input.strip() or not away_input.strip():
+
+    st.error(
+        "Please enter both the home and away teams."
+    )
+
+    st.stop()
+
+
+if home_key == away_key:
+
+    st.error(
+        "Home and away teams cannot be the same."
+    )
+
+    st.stop()
+
+
+if home_data is None:
+
+    st.warning(
+        f"No stored ratings found for {home_input}. "
+        "League-average ratings are being used."
+    )
+
+
+if away_data is None:
+
+    st.warning(
+        f"No stored ratings found for {away_input}. "
+        "League-average ratings are being used."
+    )
+
+
+# ============================================================
+# RUN MODEL
+# ============================================================
+
+try:
+
+    home_xg, away_xg = calculate_expected_goals(
+        home_key,
+        away_key,
+        weather_factor,
+        home_form,
+        away_form
+    )
+
+    results = calculate_probabilities(
+        home_xg,
+        away_xg
+    )
+
+except Exception as error:
+
+    st.error(
+        f"Prediction engine error: {error}"
+    )
+
+    st.stop()
+
+
+# ============================================================
+# MATCH HEADER
+# ============================================================
+
+st.header(
+    f"{home_input.title()} vs {away_input.title()}"
+)
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    st.metric(
+        "Home Expected Goals",
+        f"{home_xg:.2f}"
+    )
+
+with col2:
+
+    st.metric(
+        "Total Expected Goals",
+        f"{home_xg + away_xg:.2f}"
+    )
+
+with col3:
+
+    st.metric(
+        "Away Expected Goals",
+        f"{away_xg:.2f}"
+    )
+
+
+# ============================================================
+# 1X2 MARKET
+# ============================================================
+
+st.subheader("1X2 Probabilities")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    st.metric(
+        f"{home_input.title()} Win",
+        f"{results['home_win'] * 100:.1f}%"
+    )
+
+    st.caption(
+        f"Fair odds: "
+        f"{fair_odds(results['home_win']):.2f}"
+    )
+
+with col2:
+
+    st.metric(
+        "Draw",
+        f"{results['draw'] * 100:.1f}%"
+    )
+
+    st.caption(
+        f"Fair odds: "
+        f"{fair_odds(results['draw']):.2f}"
+    )
+
+with col3:
+
+    st.metric(
+        f"{away_input.title()} Win",
+        f"{results['away_win'] * 100:.1f}%"
+    )
+
+    st.caption(
+        f"Fair odds: "
+        f"{fair_odds(results['away_win']):.2f}"
+    )
+
+
+# ============================================================
+# GOAL MARKETS
+# ============================================================
+
+st.subheader("Goal Markets")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(
+        "Over 1.5",
+        f"{results['over_15'] * 100:.1f}%"
+    )
+
+with col2:
+    st.metric(
+        "Over 2.5",
+        f"{results['over_25'] * 100:.1f}%"
+    )
+
+with col3:
+    st.metric(
+        "Over 3.5",
+        f"{results['over_35'] * 100:.1f}%"
+    )
+
+with col4:
+    st.metric(
+        "BTTS",
+        f"{results['btts'] * 100:.1f}%"
+    )
+
+
+# ============================================================
+# MODEL PICK
+# ============================================================
+
+outcomes = {
+    home_input.title(): results["home_win"],
+    "Draw": results["draw"],
+    away_input.title(): results["away_win"],
+}
+
+model_pick = max(
+    outcomes,
+    key=outcomes.get
+)
+
+model_probability = outcomes[model_pick]
+
+best_score, best_score_probability = (
+    results["top_scores"][0]
+)
+
+st.subheader("Model Verdict")
+
+st.success(
+    f"Result lean: {model_pick} "
+    f"({model_probability * 100:.1f}%)"
+)
+
+st.info(
+    f"Most likely correct score: "
+    f"{best_score[0]}-{best_score[1]} "
+    f"({best_score_probability * 100:.1f}%)"
+)
+
+
+# ============================================================
+# TOP CORRECT SCORES
+# ============================================================
+
+st.subheader("Most Likely Correct Scores")
+
+score_rows = []
+
+for (home_goals, away_goals), probability in results["top_scores"]:
+
+    score_rows.append({
+        "Score": f"{home_goals}-{away_goals}",
+        "Probability": f"{probability * 100:.2f}%",
+        "Fair Odds": round(
+            fair_odds(probability),
+            2
+        )
+    })
+
+score_df = pd.DataFrame(score_rows)
+
+st.dataframe(
+    score_df,
+    use_container_width=True,
+    hide_index=True
+)
+
+
+# ============================================================
+# MARKET SUMMARY
+# ============================================================
+
+st.subheader("Prediction Summary")
+
+summary = pd.DataFrame({
+    "Market": [
+        "Home Win",
+        "Draw",
+        "Away Win",
+        "Over 1.5",
+        "Over 2.5",
+        "Over 3.5",
+        "BTTS Yes"
     ],
-    "Attack_Rating": [1.65, 2.30, 2.10, 2.25, 1.80, 1.45, 2.40, 2.05, 2.35, 1.95, 2.15, 1.60],
-    "Defense_Rating": [1.20, 0.90, 0.85, 0.95, 1.35, 1.40, 0.88, 1.05, 1.10, 0.80, 1.15, 0.90],
-    "Home_Advantage": [0.25, 0.30, 0.22, 0.35, 0.15, 0.10, 0.32, 0.28, 0.30, 0.25, 0.20, 0.18],
-    "League_Name": [
-        "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", 
-        "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", 
-        "La Liga (Spain)", "La Liga (Spain)", "Bundesliga (Germany)", "Serie A (Italy)", "Ligue 1 (France)", "Serie A (Italy)"
+
+    "Probability": [
+        results["home_win"],
+        results["draw"],
+        results["away_win"],
+        results["over_15"],
+        results["over_25"],
+        results["over_35"],
+        results["btts"]
     ]
-}
-league_df = pd.DataFrame(historical_teams_data)
-league_df["Attack_Rating"] = league_df["Attack_Rating"].astype(float)
-league_df["Defense_Rating"] = league_df["Defense_Rating"].astype(float)
-league_df["Home_Advantage"] = league_df["Home_Advantage"].astype(float)
+})
 
-# --- 2. GLOBAL SIMULATED RESEARCH KNOWLEDGE BASE ---
-AUTOMATED_RESEARCH_DB = {
-    "default": {
-        "weather_val": 1.00, "weather_txt": "Clear Sky / Standard Ambient Air (1.00x Base)", "pitch_val": 1.00, "pitch_name": "Standard Hybrid Turf Setup",
-        "travel_km": 280, "ref_strict": 0.55, "motivation_delta": 0.05, "stadium_cap": 90,
-        "opening_h": 2.10, "opening_d": 3.40, "opening_a": 3.20, "closing_h": 2.15, "closing_d": 3.35, "closing_a": 3.25, "has_closing": True,
-        "ref_name": "Standard Assigned Referee", "avg_cards": 3.80, "base_corners": 10.2, "base_sot": 8.8
-    },
-    "aston villa vs manchester city": {
-        "weather_val": 0.92, "weather_txt": "Heavy Rainfall / Wet Surface Moisture Layer (0.92x Open Play xG Suppression Factor)", "pitch_val": 0.95, "pitch_name": "Slow / Deep Muddy Natural Grass Surface (-5% Friction Velocity Drop)",
-        "travel_km": 140, "ref_strict": 0.40, "motivation_delta": 0.15, "stadium_cap": 100,
-        "opening_h": 4.20, "opening_d": 3.85, "opening_a": 1.80, "closing_h": 4.50, "closing_d": 3.90, "closing_a": 1.75, "has_closing": True,
-        "ref_name": "Michael Oliver", "avg_cards": 3.20, "base_corners": 10.5, "base_sot": 9.8
-    }
-}
+summary["Probability"] = (
+    summary["Probability"] * 100
+).round(1).astype(str) + "%"
 
-# --- 3. BACKGROUND TRAINING CORE ENGINE ---
-feature_columns = ["weather", "pitch", "fatigue", "strictness", "motivation", "integrity"]
-np.random.seed(42)
-sim_records = 200
-X_train_mock = np.zeros((sim_records, 6))
-y_train_h_xg = np.zeros(sim_records)
-y_train_a_xg = np.zeros(sim_records)
+st.dataframe(
+    summary,
+    use_container_width=True,
+    hide_index=True
+)
 
-for idx in range(sim_records):
-    w = np.random.uniform(0.85, 1.0)
-    p = np.random.uniform(0.95, 1.05)
-    t = np.random.uniform(0.0, 1.5)
-    r = np.random.uniform(0.1, 0.9)
-    m = np.random.uniform(-0.2, 0.2)
-    s = np.random.uniform(0.6, 1.0)
-    X_train_mock[idx] = [w, p, t, r, m, s]
-    y_train_h_xg[idx] = (1.6 * w * p * s) + m
-    y_train_a_xg[idx] = (1.2 * w * p * s) - (t * 0.1)
 
-X_train_df = pd.DataFrame(X_train_mock, columns=feature_columns)
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train_df)
+# ============================================================
+# MODEL INFORMATION
+# ============================================================
 
-ai_home_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_h_xg)
-ai_away_model = KNeighborsRegressor(n_neighbors=5, weights='distance').fit(X_train_scaled, y_train_a_xg)
+with st.expander("How this model works"):
 
-# --- SIDEBAR CONTROL PANEL ---
-st.sidebar.header("🌍 Global Team Input Search")
-home_team = st.sidebar.text_input("Type Home Team Name", "Aston Villa")
-away_team = st.sidebar.text_input("Type Away Team Name", "Manchester City")
-custom_league = st.sidebar.text_input("Type League / Competition Label", "English Premier League")
+    st.write("""
+    MATCHLAB estimates expected goals from the attacking
+    strength of each team, the opponent's defensive strength,
+    home advantage and user-controlled contextual adjustments.
 
-st.sidebar.header("📷 Lineup Image Stream")
-lineup_source = st.sidebar.radio("Scanner", ["Off", "Camera", "Upload"])
+    The expected-goal estimates are converted into score
+    probabilities using a Poisson model with a Dixon-Coles
+    low-score correction.
 
-img_buffer = None
-if lineup_source == "Camera": img_buffer = st.sidebar.camera_input("Snapshot")
-elif lineup_source == "Upload": img_buffer = st.sidebar.file_uploader("Upload Image", type=["png", "jpg", "jpeg"])
+    Probabilities are then normalized before calculating
+    match-result, goals, BTTS and correct-score markets.
 
-parsed_text_list = []
-if img_buffer is not None:
-    with st.spinner("Parsing lineup pixels..."):
-        try:
-            file_bytes = np.asarray(bytearray(img_buffer.read()), dtype=np.uint8)
-            opencv_img = cv2.imdecode(file_bytes, 1)
-            reader = get_ocr_reader()
-            ocr_results = reader.readtext(opencv_img)
-            parsed_text_list = [text_val for (bbox, text_val, prob) in ocr_results]
-        except Exception as cv_error: st.sidebar.error(f"Scanner fault: {cv_error}")
+    The displayed odds are mathematical fair odds and do not
+    include bookmaker margin.
+    """)
 
-# Clean and normalize strings case-independently
-home_clean = home_team.strip().lower()
-away_clean = away_team.strip().lower()
-lookup_key = f"{home_clean} vs {away_clean}"
-
-ctx = AUTOMATED_RESEARCH_DB.get(lookup_key, AUTOMATED_RESEARCH_DB["default"])
-
-# --- AUTOMATED LEAGUE LOGIC IDENTIFIER ---
-match_h = league_df[league_df["Team"] == home_clean]
-home_league_label = str(match_h["League_Name"].values[0]) if not match_h.empty else f"{custom_league} (Custom Tier)"
-
-match_a = league_df[league_df["Team"] == away_clean]
-away_league_label = str(match_a["League_Name"].values[0]) if not match_a.empty else f"{custom_league} (Custom Tier)"
-
-# AI AUTO-OPTIMIZED DISTRIBUTION CONSTRAINTS
-clean_weather = float(ctx["weather_val"])
-clean_pitch = float(ctx["pitch_val"])
-clean_strictness = float(ctx["ref_strict"])
-clean_motivation = float(ctx["motivation_delta"])
-clean_travel = float(ctx["travel_km"])
-
-ai_calculated_rho = float(np.clip(-0.05 + (clean_strictness * -0.02), -0.15, 0.15))
-ai_calculated_cap = int(np.clip(10 + int(clean_motivation * 5), 6, 15))
-fatigue_val = min(1.5, clean_travel / 500.0)
-
-squad_integrity_coef = 1.0
-ocr_logs_text = []
-if parsed_text_list:
-    text_blob_lower = " ".join(parsed_text_list).lower()
-    star_registry = {
-        "aston villa": ["watkins", "martinez", "bailey"],
-        "manchester city": ["haaland", "de bruyne", "rodri"]
-    }
-    if home_clean in star_registry:
-        for star in star_registry[home_clean]:
-            if star not in text_blob_lower:
-                squad_integrity_coef -= 0.12
-                ocr_logs_text.append(f"❌ **Squad Alert:** {star.capitalize()} missing from analyzed lineup tracking stream.")
-
-# Pass sanitized metrics inside the 2D frame block
-raw_vector = np.array([[clean_weather, clean_pitch, fatigue_val, clean_strictness, clean_motivation, squad_integrity_coef]], dtype=float)
-live_input_scaled = scaler.transform(raw_vector)
-
-# FIXED: Sliced index arrays explicitly capturing the leading array float component elements [0] to stop datatype crashes
-ai_adjustment_h = float(ai_home_model.predict(live_input_scaled)[0])
-ai_adjustment_a = float(ai_away_model.predict(live_input_scaled)[0])
-
-# Flat Team Metrics Lookups
-match_h_metrics = league_df[league_df["Team"] == home_clean]
+st.caption(
+    "MATCHLAB produces statistical estimates, not guaranteed outcomes."
+)
