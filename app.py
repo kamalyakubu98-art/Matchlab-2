@@ -73,14 +73,21 @@ def calculate(home_xg, away_xg, max_goals=10, rho=-0.05):
     }
 
 # --- 1. HISTORICAL REGISTRY BASELINES & LEAGUE MAPPING DATABASE ---
+# FIXED: All lists below contain EXACTLY 12 matching items to prevent structural length errors
 historical_teams_data = {
-    "Team": ["aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"],
+    "Team": [
+        "aston villa", "manchester city", "arsenal", "liverpool", "chelsea", "manchester united", 
+        "real madrid", "barcelona", "bayern munich", "inter milan", "psg", "juventus"
+    ],
     "Attack_Rating": [1.65, 2.30, 2.10, 2.25, 1.80, 1.45, 2.40, 2.05, 2.35, 1.95, 2.15, 1.60],
     "Defense_Rating": [1.20, 0.90, 0.85, 0.95, 1.35, 1.40, 0.88, 1.05, 1.10, 0.80, 1.15, 0.90],
-    "Home_Advantage": [0.25, 0.30, 0.22, 0.35, 0.15, 0.10],
-    "League_Name": ["English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", "La Liga (Spain)", "La Liga (Spain)", "Bundesliga (Germany)", "Serie A (Italy)", "Ligue 1 (France)", "Serie A (Italy)"]
+    "Home_Advantage": [0.25, 0.30, 0.22, 0.35, 0.15, 0.10, 0.32, 0.28, 0.30, 0.25, 0.20, 0.18],
+    "League_Name": [
+        "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", 
+        "English Premier League (England)", "English Premier League (England)", "English Premier League (England)", 
+        "La Liga (Spain)", "La Liga (Spain)", "Bundesliga (Germany)", "Serie A (Italy)", "Ligue 1 (France)", "Serie A (Italy)"
+    ]
 }
-# Enforce native numeric types upon dataframe initialization
 league_df = pd.DataFrame(historical_teams_data)
 league_df["Attack_Rating"] = league_df["Attack_Rating"].astype(float)
 league_df["Defense_Rating"] = league_df["Defense_Rating"].astype(float)
@@ -204,6 +211,3 @@ def get_team_metrics(name, role):
     return 1.75 if role == "Attack_Rating" else 1.15
 
 att_h = get_team_metrics(home_team, "Attack_Rating")
-def_a = get_team_metrics(away_team, "Defense_Rating")
-att_a = get_team_metrics(away_team, "Attack_Rating")
-    
