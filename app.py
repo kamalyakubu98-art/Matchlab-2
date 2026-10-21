@@ -328,7 +328,7 @@ st.dataframe(summary, use_container_width=True, hide_index=True)
 with st.expander("Model checks and limitations"):
     st.write(f"1X2 probability sum: {results['result_probability_sum'] * 100:.6f}%")
     st.write(f"Estimated independent Poisson mass beyond the selected score limit: {results['omitted_mass_estimate'] * 100:.6f}%")
-  st.write("""
+    st.write("""
     MATCHLAB uses manually entered team ratings and a statistical
     Poisson model with a Dixon-Coles low-score correction.
 
