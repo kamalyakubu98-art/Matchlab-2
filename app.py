@@ -13,8 +13,6 @@ st.warning(
     "Probabilities are estimates, not guarantees."
 )
 
-REQUIRED = {"home_team", "away_team", "home_goals", "away_goals"}
-
 def poisson_pmf(k, lam):
     if lam <= 0:
         return 1.0 if k == 0 else 0.0
@@ -70,14 +68,14 @@ def estimate_xg(df, home_name, away_name, lookback=10):
         raise ValueError(f"No away matches found for '{away_name}' in the uploaded file.")
     league_home = d["home_goals"].mean()
     league_away = d["away_goals"].mean()
-    # Shrink small samples toward league averages to reduce overreaction.
+    
     def mean_or(series, fallback):
         return float(series.mean()) if len(series) else fallback
     h_scored = mean_or(home_matches["home_goals"], league_home)
     h_conceded = mean_or(home_matches["away_goals"], league_away)
     a_scored = mean_or(away_matches["away_goals"], league_away)
     a_conceded = mean_or(away_matches["home_goals"], league_home)
-    # Blend venue-specific performance with overall team performance.
+    
     h_overall_scored = mean_or(
         pd.concat([home_all.loc[home_all.home_team.str.casefold() == home_name.casefold(), "home_goals"],
                    home_all.loc[home_all.away_team.str.casefold() == home_name.casefold(), "away_goals"]]),
@@ -113,17 +111,35 @@ hxg = axg = None
 meta = {}
 if mode == "Historical CSV":
     st.subheader("Historical data")
-    st.write("CSV must contain these columns: `home_team`, `away_team`, `home_goals`, `away_goals`. A `date` column is recommended.")
-    st.write("Example row: `2026-09-20,Arsenal,Newcastle,2,1`")
+    st.write("Upload a CSV file containing past match results to calibrate the model.")
     if uploaded:
         try:
             df = pd.read_csv(uploaded)
+            
+            # Smart normalization map for common external soccer datasets
+            rename_map = {}
+            for col in df.columns:
+                c_clean = str(col).strip().lower()
+                if c_clean in ["home_team", "hometeam", "home", "ht"]:
+                    rename_map[col] = "home_team"
+                elif c_clean in ["away_team", "awayteam", "away", "at"]:
+                    rename_map[col] = "away_team"
+                elif c_clean in ["home_goals", "fthg", "homegoals", "hg"]:
+                    rename_map[col] = "home_goals"
+                elif c_clean in ["away_goals", "ftag", "awaygoals", "ag"]:
+                    rename_map[col] = "away_goals"
+                elif c_clean in ["date", "match_date", "dt"]:
+                    rename_map[col] = "date"
+            
+            df = df.rename(columns=rename_map)
+            REQUIRED = {"home_team", "away_team", "home_goals", "away_goals"}
             missing = REQUIRED - set(df.columns)
+            
             if missing:
-                st.error("Missing required columns: " + ", ".join(sorted(missing)))
+                st.error("Missing required fields. Please ensure your CSV contains home/away team columns and score columns.")
             else:
                 hxg, axg, meta = estimate_xg(df, home_team, away_team, lookback)
-                st.success(f"Loaded {meta['matches_in_file']} match rows. Estimated expected goals from your file.")
+                st.success(f"Successfully processed {meta['matches_in_file']} rows. Mapping complete.")
         except Exception as e:
             st.error(f"Could not process that CSV: {e}")
     else:
@@ -163,28 +179,4 @@ if hxg is not None and axg is not None and home_team.strip() and away_team.strip
         st.write(f"Home-team home sample: {meta['home_venue_sample']} matches; away-team away sample: {meta['away_venue_sample']} matches.")
         st.write(f"League averages in file: home goals {meta['league_home_avg']:.2f}; away goals {meta['league_away_avg']:.2f}.")
     st.info("Reliability warning: these are model-based estimates, not certainty. The CSV mode is a simple baseline, not a fully trained or backtested AI model. It does not account for lineups, injuries, red cards, odds, schedule congestion, or xG unless reflected in the input data.")
-    st.download_button(
-        "Download this prediction as CSV",
-        pd.DataFrame([{
-            "run_utc": datetime.now(timezone.utc).isoformat(),
-            "home_team": home_team, "away_team": away_team,
-            "home_expected_goals": hxg, "away_expected_goals": axg,
-            "home_win_probability": result["home_win"], "draw_probability": result["draw"],
-            "away_win_probability": result["away_win"], "over_1_5": result["over15"],
-            "over_2_5": result["over25"], "over_3_5": result["over35"],
-            "btts": result["btts"], "home_to_score": result["home_score"],
-            "away_to_score": result["away_score"]
-        }]).to_csv(index=False),
-        file_name="matchlab_prediction.csv", mime="text/csv"
-    )
-elif home_team.strip().casefold() == away_team.strip().casefold():
-    st.error("Choose two different teams.")
-
-st.divider()
-st.subheader("How to judge reliability")
-st.markdown(
-    "- Save predictions **before kickoff** and compare them with final results.\n"
-    "- One match cannot establish reliability; evaluate at least hundreds of out-of-sample matches.\n"
-    "- Track Brier score/log loss and calibration, not just how many top picks win.\n"
-    "- Never describe a high probability as a guaranteed result."
-)
+    
